@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+.env
+separated/
+samples/sample.mp3
+samples/sample.lrc
+results.txt

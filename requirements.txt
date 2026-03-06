@@ -1,0 +1,23 @@
+# Audio separation
+demucs
+torchaudio<2.6
+
+# Pitch detection
+basic-pitch   
+
+# Audio processing
+librosa
+soundfile         # for reading/writing wav files
+numpy
+
+# Data handling
+pandas
+
+# CLI
+argparse          # built into Python stdlib, no install needed — remove this line
+
+# Output formatting
+tabulate          # for pretty terminal table output
+
+# Testing
+pytest
