@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent / "pipeline"))
 try:
     from stemmer import isolate_vocals
     from pitch_detector import detect_pitch
-    from note_mapper import map_notes
+    from note_mapper import map_notes, detect_key
     from lyric_aligner import align_lyrics_to_notes
     from output import format_output
 except ImportError as e:
@@ -177,6 +177,12 @@ Examples:
             print("=" * 60)
             print(result)
 
+        # Key detection
+        key_result = detect_key(aligned_events)
+        candidates = ', '.join(f"{k} ({v:.0%})" for k, v in key_result['candidates'])
+        print(f"  • Estimated key:  {key_result['key']} ({key_result['score']:.0%} match)")
+        print(f"  • Also possible:  {candidates}")
+
         print()
         print("=" * 60)
         print("Transcription complete!")
@@ -188,6 +194,8 @@ Examples:
         print(f"  • Input:       {input_label}")
         print(f"  • Note events: {len(aligned_events)}")
         print(f"  • Transposed:  {args.transpose} semitones")
+        print(f"  • Estimated key:  {key_result['key']} ({key_result['score']:.0%} match)")
+        print(f"  • Also possible:  {candidates}") 
         if args.lyrics:
             matched = sum(1 for event in aligned_events if event.get('lyric') is not None)
             print(f"  • Lyrics matched: {matched}/{len(aligned_events)}")

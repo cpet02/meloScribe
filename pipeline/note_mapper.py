@@ -32,63 +32,28 @@ class NoteMapper:
     NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
     def __init__(self, confidence_threshold: float = 0.85, transpose: int = 0):
-        """
-        Initialize note mapper.
-
-        Args:
-            confidence_threshold: Minimum confidence to include a pitch frame (0-1)
-            transpose: Semitones to transpose output (e.g. 9 for alto sax Eb)
-        """
         if not 0 <= confidence_threshold <= 1:
             raise ValueError(f"Confidence threshold must be between 0 and 1, got {confidence_threshold}")
-
         self.confidence_threshold = confidence_threshold
         self.transpose = transpose
 
     def hz_to_note_name(self, frequency: float) -> str:
-        """
-        Convert frequency in Hz to note name using librosa.
-
-        Args:
-            frequency: Frequency in Hz
-
-        Returns:
-            Note name (e.g., "C4", "A#3")
-
-        Raises:
-            ValueError: If frequency is non-positive
-        """
         if frequency <= 0:
             raise ValueError(f"Frequency must be positive, got {frequency}")
-
         note_number = librosa.hz_to_midi(frequency)
-        note_name = librosa.midi_to_note(note_number, unicode=False)
-
-        return note_name
+        return librosa.midi_to_note(note_number, unicode=False)
 
     def _transpose_note(self, note: str, semitones: int) -> str:
-        """
-        Transpose a note name by a given number of semitones.
-
-        Args:
-            note: Note name (e.g. "C4")
-            semitones: Number of semitones to transpose
-
-        Returns:
-            Transposed note name
-        """
         midi = librosa.note_to_midi(note)
         return librosa.midi_to_note(int(midi) + semitones, unicode=False)
 
     def filter_by_confidence(self, pitch_data: List[Dict[str, float]]) -> List[Dict[str, float]]:
-        """Filter pitch data by confidence threshold."""
         return [
             frame for frame in pitch_data
             if frame['confidence'] >= self.confidence_threshold
         ]
 
     def segment_notes(self, pitch_data: List[Dict[str, float]]) -> List[NoteEvent]:
-        """Group consecutive same-note frames into note events."""
         if not pitch_data:
             return []
 
@@ -141,15 +106,6 @@ class NoteMapper:
         return note_events
 
     def process(self, pitch_data: List[Dict[str, float]]) -> List[Dict[str, Any]]:
-        """
-        Full processing pipeline: filter → convert → segment → transpose.
-
-        Args:
-            pitch_data: Raw pitch detection output
-
-        Returns:
-            List of note event dictionaries
-        """
         filtered_data = self.filter_by_confidence(pitch_data)
         note_events = self.segment_notes(filtered_data)
         result = [event.to_dict() for event in note_events]
@@ -161,6 +117,75 @@ class NoteMapper:
             ]
 
         return result
+
+
+# All 24 keys and their pitch classes
+_SCALES = {
+    'C major':  ['C', 'D', 'E', 'F', 'G', 'A', 'B'],
+    'G major':  ['G', 'A', 'B', 'C', 'D', 'E', 'F#'],
+    'D major':  ['D', 'E', 'F#', 'G', 'A', 'B', 'C#'],
+    'A major':  ['A', 'B', 'C#', 'D', 'E', 'F#', 'G#'],
+    'E major':  ['E', 'F#', 'G#', 'A', 'B', 'C#', 'D#'],
+    'B major':  ['B', 'C#', 'D#', 'E', 'F#', 'G#', 'A#'],
+    'F# major': ['F#', 'G#', 'A#', 'B', 'C#', 'D#', 'F'],
+    'F major':  ['F', 'G', 'A', 'A#', 'C', 'D', 'E'],
+    'Bb major': ['A#', 'C', 'D', 'D#', 'F', 'G', 'A'],
+    'Eb major': ['D#', 'F', 'G', 'G#', 'A#', 'C', 'D'],
+    'Ab major': ['G#', 'A#', 'C', 'C#', 'D#', 'F', 'G'],
+    'Db major': ['C#', 'D#', 'F', 'F#', 'G#', 'A#', 'C'],
+    'A minor':  ['A', 'B', 'C', 'D', 'E', 'F', 'G'],
+    'E minor':  ['E', 'F#', 'G', 'A', 'B', 'C', 'D'],
+    'B minor':  ['B', 'C#', 'D', 'E', 'F#', 'G', 'A'],
+    'F# minor': ['F#', 'G#', 'A', 'B', 'C#', 'D', 'E'],
+    'C# minor': ['C#', 'D#', 'E', 'F#', 'G#', 'A', 'B'],
+    'D minor':  ['D', 'E', 'F', 'G', 'A', 'A#', 'C'],
+    'G minor':  ['G', 'A', 'A#', 'C', 'D', 'D#', 'F'],
+    'C minor':  ['C', 'D', 'D#', 'F', 'G', 'G#', 'A#'],
+    'F minor':  ['F', 'G', 'G#', 'A#', 'C', 'C#', 'D#'],
+    'Bb minor': ['A#', 'C', 'C#', 'D#', 'F', 'F#', 'G#'],
+    'Eb minor': ['D#', 'F', 'F#', 'G#', 'A#', 'B', 'C#'],
+    'Ab minor': ['G#', 'A#', 'B', 'C#', 'D#', 'E', 'F#'],
+}
+
+
+def detect_key(note_events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Estimate the key signature from a list of note events.
+
+    Args:
+        note_events: List of note event dicts with a 'note' field (e.g. "A#4")
+
+    Returns:
+        Dict with:
+            'key': best matching key name (e.g. "Bb major")
+            'score': fraction of detected notes that fit the key (0-1)
+            'candidates': top 3 key matches as list of (key, score) tuples
+    """
+    if not note_events:
+        return {'key': 'Unknown', 'score': 0.0, 'candidates': []}
+
+    def pitch_class(note: str) -> str:
+        return ''.join(c for c in note if not c.isdigit()).strip()
+
+    pitch_classes = [pitch_class(e['note']) for e in note_events if e.get('note')]
+    total = len(pitch_classes)
+
+    if total == 0:
+        return {'key': 'Unknown', 'score': 0.0, 'candidates': []}
+
+    scores = {}
+    for key_name, scale in _SCALES.items():
+        matches = sum(1 for pc in pitch_classes if pc in scale)
+        scores[key_name] = matches / total
+
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    best_key, best_score = ranked[0]
+
+    return {
+        'key': best_key,
+        'score': best_score,
+        'candidates': ranked[:3]
+    }
 
 
 def map_notes(pitch_data: List[Dict[str, float]],

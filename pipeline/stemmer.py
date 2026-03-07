@@ -62,7 +62,8 @@ class Stemmer:
         
         # Determine output directory
         if output_dir is None:
-            output_dir = Path(tempfile.mkdtemp(prefix="demucs_", dir=input_path.parent))
+            output_dir = Path(__file__).parent.parent / "separated"
+            output_dir.mkdir(exist_ok=True)
         else:
             output_dir = Path(output_dir).resolve()
             output_dir.mkdir(parents=True, exist_ok=True)
