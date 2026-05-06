@@ -19,6 +19,8 @@ try:
     from note_mapper import map_notes, detect_key
     from lyric_aligner import align_lyrics_to_notes
     from output import format_output
+    from beat_tracker import get_beat_grid, BeatTracker
+    from config import load_config
 except ImportError as e:
     print(f"Error importing pipeline modules: {e}")
     print("Make sure all pipeline modules are in the 'pipeline' directory.")
@@ -27,6 +29,10 @@ except ImportError as e:
 
 def main():
     """Main CLI entry point for Melody Transcriber."""
+
+    # Load config file defaults (CLI flags always override these)
+    _cfg = load_config()
+
     parser = argparse.ArgumentParser(
         description="Melody Transcriber - Transcribe vocal melodies from MP3 files",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -60,27 +66,38 @@ Examples:
     parser.add_argument(
         "--confidence",
         type=float,
-        default=0.85,
+        default=_cfg.get('confidence', 0.85),
         help="Confidence threshold for note detection (0-1, default: 0.85)"
     )
 
     parser.add_argument(
         "--transpose",
         type=int,
-        default=9,
+        default=_cfg.get('transpose', 9),
         help="Semitones to transpose output (default: 9 for alto sax Eb). Use 0 for concert pitch."
     )
 
     parser.add_argument(
         "--output",
+        default=_cfg.get('output', None),
         help="Path to write output file (optional, prints to stdout if not specified)"
     )
 
     parser.add_argument(
         "--format",
         choices=["table", "csv", "json", "leadsheet"],
-        default="table",
+        default=_cfg.get('format', 'table'),
         help="Output format (default: table)"
+    )
+    parser.add_argument(
+        '--dual-pitch', action='store_true',
+        default=_cfg.get('dual_pitch', False),
+        help='Run PYIN pitch detection for cross-validation (slower)'
+    )
+    parser.add_argument(
+        '--chord-context', action='store_true',
+        default=_cfg.get('chord_context', False),
+        help='Extract chord timeline from backing track for cross-validation (slower)'
     )
 
     # Parse arguments
@@ -112,6 +129,8 @@ Examples:
     print("=" * 60)
     print("Melody Transcriber - Starting Transcription")
     print("=" * 60)
+    if _cfg:
+        print(f"Config:             meloscribe.toml loaded ({len(_cfg)} setting(s))")
     if args.input:
         print(f"Input:              {args.input}")
     if args.vocals:
@@ -144,10 +163,67 @@ Examples:
         print(f"  ✓ Detected {len(pitch_data)} pitch frames")
         print()
 
+        # Phase 2b: Detect beat grid (always runs — fast, no extra deps)
+        print("[Phase 2b/5] Detecting beat grid...")
+        try:
+            beat_grid = get_beat_grid(vocals_path)
+            print(f"  ✓ {beat_grid['bpm']:.1f} BPM, {len(beat_grid['beat_times'])} beats")
+        except Exception as e:
+            print(f"  ⚠ Beat detection failed ({e}), continuing without beat grid")
+            beat_grid = None
+        print()
+
+        # Phase 2c: PYIN cross-validation (optional)
+        if args.dual_pitch:
+            print("[Phase 2c/5] Running PYIN pitch cross-validation...")
+            try:
+                from pyin_detector import get_pyin_pitch
+                pyin_data = get_pyin_pitch(vocals_path)
+                print(f"  ✓ {len(pyin_data)} voiced PYIN frames")
+            except Exception as e:
+                print(f"  ⚠ PYIN detection failed ({e}), continuing without")
+                pyin_data = None
+        else:
+            pyin_data = None
+        print()
+
+        # Phase 2d: Chord context (optional)
+        if args.chord_context:
+            print("[Phase 2d/5] Extracting chord context from backing track...")
+            try:
+                from chord_tracker import get_chord_timeline
+                from stemmer import get_stem_paths
+                stem_paths = get_stem_paths(args.input or args.vocals)
+                beat_times = beat_grid['beat_times'] if beat_grid else []
+                chord_timeline = get_chord_timeline(stem_paths['other'], beat_times)
+                print(f"  ✓ {len(chord_timeline)} chord entries")
+            except Exception as e:
+                print(f"  ⚠ Chord extraction failed ({e}), continuing without")
+                chord_timeline = None
+        else:
+            chord_timeline = None
+        print()
+
         # Phase 3: Map pitch to notes with filtering and transposition
         print("[Phase 3/5] Mapping pitch to notes...")
-        note_events = map_notes(pitch_data, args.confidence, transpose=args.transpose)
+        note_events = map_notes(pitch_data, args.confidence,
+                                transpose=args.transpose,
+                                pyin_data=pyin_data,
+                                chord_timeline=chord_timeline)
         print(f"  ✓ Mapped to {len(note_events)} note events")
+
+        # Annotate beat alignment if beat grid is available
+        if beat_grid:
+            tracker = BeatTracker()
+            note_events = tracker.annotate_beat_alignment(note_events, beat_grid)
+
+        if pyin_data:
+            agreed = sum(1 for e in note_events if e.get('pyin_agrees'))
+            print(f"  PYIN agreement: {agreed}/{len(note_events)} notes confirmed")
+
+        if chord_timeline:
+            fit = sum(1 for e in note_events if e.get('chord_fit'))
+            print(f"  Chord fit: {fit}/{len(note_events)} notes fit active chord")
         print()
 
         # Phase 4: Align lyrics (if provided)

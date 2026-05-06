@@ -31,11 +31,14 @@ class NoteMapper:
 
     NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
-    def __init__(self, confidence_threshold: float = 0.85, transpose: int = 0):
+    def __init__(self, confidence_threshold: float = 0.85, transpose: int = 0,
+                 apply_key_filter: bool = True, smooth: bool = True):
         if not 0 <= confidence_threshold <= 1:
             raise ValueError(f"Confidence threshold must be between 0 and 1, got {confidence_threshold}")
         self.confidence_threshold = confidence_threshold
         self.transpose = transpose
+        self.apply_key_filter = apply_key_filter
+        self.smooth = smooth
 
     def hz_to_note_name(self, frequency: float) -> str:
         if frequency <= 0:
@@ -46,6 +49,47 @@ class NoteMapper:
     def _transpose_note(self, note: str, semitones: int) -> str:
         midi = librosa.note_to_midi(note)
         return librosa.midi_to_note(int(midi) + semitones, unicode=False)
+
+    def filter_by_key(self, note_events: List[Dict[str, Any]],
+                      key_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Remove notes whose pitch class falls outside the detected key's scale.
+
+        Only filters when key detection is confident (score >= 0.6). Below that
+        threshold the key estimate is too uncertain to use as a hard filter, so
+        the full note list is returned unchanged.
+
+        Args:
+            note_events: List of note event dicts (must have 'note' field)
+            key_result:  Output of detect_key() — needs 'key' and 'score' fields
+
+        Returns:
+            Filtered list of note events
+        """
+        key_name = key_result.get('key', 'Unknown')
+        score = key_result.get('score', 0.0)
+
+        # Don't filter if key is unknown or detection confidence is too low
+        if key_name == 'Unknown' or score < 0.6 or key_name not in _SCALES:
+            return note_events
+
+        scale = set(_SCALES[key_name])
+
+        def pitch_class(note: str) -> str:
+            return ''.join(c for c in note if not c.isdigit()).strip()
+
+        kept, removed = [], 0
+        for event in note_events:
+            pc = pitch_class(event.get('note', ''))
+            if pc in scale:
+                kept.append(event)
+            else:
+                removed += 1
+
+        if removed:
+            print(f"  Key filter ({key_name}): removed {removed} out-of-key note(s)")
+
+        return kept
 
     def filter_by_confidence(self, pitch_data: List[Dict[str, float]]) -> List[Dict[str, float]]:
         return [
@@ -105,10 +149,213 @@ class NoteMapper:
 
         return note_events
 
-    def process(self, pitch_data: List[Dict[str, float]]) -> List[Dict[str, Any]]:
+    def remove_octave_outliers(self, note_events: List[Dict[str, Any]],
+                               max_duration: float = 0.15) -> List[Dict[str, Any]]:
+        """
+        Remove short notes that are more than one octave away from both neighbours.
+
+        These are almost always spurious overtone hits — a detector briefly locks onto
+        a harmonic rather than the fundamental. Only removes the note when it is short
+        (below max_duration) AND an outlier relative to both the note before and after
+        it. Isolated notes at the start/end of the sequence are never removed.
+
+        Args:
+            note_events:   List of note event dicts (must have 'note', 'start_time',
+                           'end_time' fields)
+            max_duration:  Maximum duration in seconds for a note to be considered a
+                           candidate for removal (default 0.15s)
+
+        Returns:
+            Filtered list with outlier notes removed
+        """
+        if len(note_events) < 3:
+            return note_events
+
+        def midi(note: str) -> int:
+            try:
+                return librosa.note_to_midi(note)
+            except Exception:
+                return None
+
+        kept = []
+        for i, event in enumerate(note_events):
+            if i == 0 or i == len(note_events) - 1:
+                kept.append(event)
+                continue
+
+            duration = event['end_time'] - event['start_time']
+            if duration >= max_duration:
+                kept.append(event)
+                continue
+
+            mid  = midi(event['note'])
+            prev = midi(note_events[i - 1]['note'])
+            nxt  = midi(note_events[i + 1]['note'])
+
+            if mid is None or prev is None or nxt is None:
+                kept.append(event)
+                continue
+
+            # Outlier = more than 12 semitones (one octave) from BOTH neighbours
+            if abs(mid - prev) > 12 and abs(mid - nxt) > 12:
+                continue  # drop it
+
+            kept.append(event)
+
+        removed = len(note_events) - len(kept)
+        if removed:
+            print(f"  Smoothing: removed {removed} octave outlier(s)")
+
+        return kept
+
+    def merge_flickers(self, note_events: List[Dict[str, Any]],
+                       max_gap: float = 0.08) -> List[Dict[str, Any]]:
+        """
+        Merge consecutive same-pitch notes separated by a very short gap.
+
+        A gap under max_gap between two identical notes is almost certainly a
+        detection dropout rather than an intentional rest. Merges them into one
+        event spanning both, averaging confidence.
+
+        Args:
+            note_events: List of note event dicts
+            max_gap:     Maximum gap in seconds to bridge (default 0.08s)
+
+        Returns:
+            List with flicker pairs merged
+        """
+        if not note_events:
+            return []
+
+        def pitch_class_and_octave(note: str) -> str:
+            return note  # full note name comparison (e.g. "A4" == "A4")
+
+        merged = [dict(note_events[0])]  # copy first event
+
+        for event in note_events[1:]:
+            prev = merged[-1]
+            gap = event['start_time'] - prev['end_time']
+
+            if (pitch_class_and_octave(event['note']) == pitch_class_and_octave(prev['note'])
+                    and 0 <= gap <= max_gap):
+                # Extend previous event to cover this one, average confidence
+                prev['end_time'] = event['end_time']
+                prev['confidence'] = float(np.mean([prev['confidence'], event['confidence']]))
+            else:
+                merged.append(dict(event))
+
+        removed = len(note_events) - len(merged)
+        if removed:
+            print(f"  Smoothing: merged {removed} flicker(s)")
+
+        return merged
+
+    def annotate_pyin_agreement(self,
+                                note_events: List[Dict[str, Any]],
+                                pyin_data: List[Dict[str, Any]],
+                                cent_tolerance: float = 50) -> List[Dict[str, Any]]:
+        """
+        Cross-validate each note event against PYIN pitch frames.
+
+        For each note event, collects all PYIN frames whose timestamp falls
+        within [start_time, end_time]. If any frame's frequency agrees with
+        the note's frequency within cent_tolerance cents, sets pyin_agrees=True.
+        Otherwise sets pyin_agrees=False and penalises confidence by ×0.85.
+
+        When no PYIN frames fall in the window (absence of data), pyin_agrees
+        is set to False but confidence is NOT penalised.
+        """
+        for event in note_events:
+            note_freq = librosa.note_to_hz(event['note'])
+            note_midi = librosa.hz_to_midi(note_freq)
+
+            start = event['start_time']
+            end   = event['end_time']
+
+            window_frames = [
+                f for f in pyin_data
+                if start <= f['time'] <= end
+            ]
+
+            if not window_frames:
+                event['pyin_agrees'] = False
+                continue
+
+            agrees = False
+            for frame in window_frames:
+                frame_midi = librosa.hz_to_midi(frame['frequency'])
+                cents_diff = abs(note_midi - frame_midi) * 100
+                if cents_diff <= cent_tolerance:
+                    agrees = True
+                    break
+
+            event['pyin_agrees'] = agrees
+            if not agrees:
+                event['confidence'] = event['confidence'] * 0.85
+
+        return note_events
+
+    def annotate_chord_fit(
+        self,
+        note_events: List[Dict[str, Any]],
+        chord_timeline: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Add a chord_fit bool field to each note event.
+
+        For each note, finds the chord entry whose time is closest to the
+        note's start_time, then checks whether the note's pitch class
+        appears in that chord's chord_notes list.
+
+        Informational only — does not remove notes.
+
+        Args:
+            note_events:    List of note event dicts
+            chord_timeline: Output of get_chord_timeline() — each entry is
+                            {'time': float, 'chord_notes': List[str]}
+
+        Returns:
+            The same list with chord_fit: bool added to every event
+        """
+        if not chord_timeline:
+            for event in note_events:
+                event['chord_fit'] = False
+            return note_events
+
+        beat_times = np.array([entry['time'] for entry in chord_timeline])
+
+        def _pitch_class(note: str) -> str:
+            return ''.join(ch for ch in note if not ch.isdigit()).strip()
+
+        for event in note_events:
+            t   = event['start_time']
+            idx = int(np.argmin(np.abs(beat_times - t)))
+            pc  = _pitch_class(event.get('note', ''))
+            event['chord_fit'] = pc in chord_timeline[idx]['chord_notes']
+
+        return note_events
+
+    def process(self, pitch_data: List[Dict[str, float]],
+                pyin_data: Optional[List[Dict[str, Any]]] = None,
+                chord_timeline: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         filtered_data = self.filter_by_confidence(pitch_data)
         note_events = self.segment_notes(filtered_data)
         result = [event.to_dict() for event in note_events]
+
+        if self.apply_key_filter:
+            key_result = detect_key(result)
+            result = self.filter_by_key(result, key_result)
+
+        if self.smooth:
+            result = self.remove_octave_outliers(result)
+            result = self.merge_flickers(result)
+
+        if pyin_data is not None:
+            result = self.annotate_pyin_agreement(result, pyin_data)
+
+        # Chord annotation before transposition — pitch classes must be in concert pitch
+        if chord_timeline is not None:
+            result = self.annotate_chord_fit(result, chord_timeline)
 
         if self.transpose:
             result = [
@@ -190,20 +437,32 @@ def detect_key(note_events: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def map_notes(pitch_data: List[Dict[str, float]],
               confidence_threshold: float = 0.85,
-              transpose: int = 0) -> List[Dict[str, Any]]:
+              transpose: int = 0,
+              apply_key_filter: bool = True,
+              smooth: bool = True,
+              pyin_data: Optional[List[Dict[str, Any]]] = None,
+              chord_timeline: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """
     Convenience function for note mapping.
 
     Args:
-        pitch_data: Raw pitch detection output
+        pitch_data:           Raw pitch detection output
         confidence_threshold: Minimum confidence threshold
-        transpose: Semitones to transpose (default 0, use 9 for alto sax Eb)
+        transpose:            Semitones to transpose (default 0, use 9 for alto sax Eb)
+        apply_key_filter:     Remove notes outside the detected key (default True)
+        smooth:               Merge flickers and remove octave outliers (default True)
+        pyin_data:            Optional PYIN frames for cross-validation (Step 4)
+        chord_timeline:       Optional beat-level chord timeline (Step 5)
 
     Returns:
         List of note event dictionaries
     """
-    mapper = NoteMapper(confidence_threshold=confidence_threshold, transpose=transpose)
-    return mapper.process(pitch_data)
+    mapper = NoteMapper(confidence_threshold=confidence_threshold,
+                        transpose=transpose,
+                        apply_key_filter=apply_key_filter,
+                        smooth=smooth)
+    return mapper.process(pitch_data, pyin_data=pyin_data, chord_timeline=chord_timeline)
+    return mapper.process(pitch_data, pyin_data=pyin_data)
 
 
 if __name__ == "__main__":

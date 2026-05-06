@@ -21,3 +21,7 @@ tabulate          # for pretty terminal table output
 
 # Testing
 pytest
+
+# UI
+streamlit
+pandas

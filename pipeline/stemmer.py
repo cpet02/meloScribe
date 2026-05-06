@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
+from typing import Dict
 import warnings
 import sys
 
@@ -158,6 +159,50 @@ def isolate_vocals(input_path, output_dir=None, force_reprocess=False):
     """
     stemmer = Stemmer()
     return stemmer.separate_vocals(input_path, output_dir, force_reprocess)
+
+
+def get_stem_paths(input_path: str) -> Dict[str, str]:
+    """
+    Return paths to the stems Demucs produced for a given input file.
+
+    Does not re-run stemming — assumes isolate_vocals() has already been called.
+    Returns {'vocals': str, 'other': str}.
+
+    The Demucs output structure is:
+        separated/htdemucs/{stem_name}/vocals.wav
+        separated/htdemucs/{stem_name}/other.wav
+
+    Args:
+        input_path: Path to the original input file (MP3 or WAV)
+
+    Returns:
+        Dict with keys 'vocals' and 'other', each an absolute path string
+
+    Raises:
+        FileNotFoundError: If either stem file does not exist on disk
+    """
+    input_path = Path(input_path).resolve()
+    stem_name  = input_path.stem
+
+    separated_dir = Path(__file__).parent.parent / "separated"
+    base_dir      = separated_dir / "htdemucs" / stem_name
+
+    vocals_path = base_dir / "vocals.wav"
+    other_path  = base_dir / "other.wav"
+
+    missing = []
+    if not vocals_path.exists():
+        missing.append(str(vocals_path))
+    if not other_path.exists():
+        missing.append(str(other_path))
+
+    if missing:
+        raise FileNotFoundError(
+            "Stem file(s) not found (run isolate_vocals() first): "
+            + ", ".join(missing)
+        )
+
+    return {'vocals': str(vocals_path), 'other': str(other_path)}
 
 
 if __name__ == "__main__":
