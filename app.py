@@ -7,6 +7,7 @@ import sys
 import os
 import tempfile
 import time
+import json
 from pathlib import Path
 
 import streamlit as st
@@ -16,7 +17,7 @@ _pipeline_dir = str(Path(__file__).parent / "pipeline")
 if _pipeline_dir not in sys.path:
     sys.path.insert(0, _pipeline_dir)
 
-# ── Page config ──────────────────────────────────────────────────────────────
+# ── Page config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
     page_title="meloScribe",
@@ -27,7 +28,6 @@ st.set_page_config(
 
 # ── Pipeline imports ──────────────────────────────────────────────────────────
 
-_import_error = None
 try:
     from stemmer import isolate_vocals
     from pitch_detector import detect_pitch
@@ -36,58 +36,41 @@ try:
     from output import format_output
     from beat_tracker import get_beat_grid, BeatTracker
     from config import load_config
-    pipeline = dict(
-        isolate_vocals=isolate_vocals,
-        detect_pitch=detect_pitch,
-        map_notes=map_notes,
-        detect_key=detect_key,
-        align_lyrics_to_notes=align_lyrics_to_notes,
-        format_output=format_output,
-        get_beat_grid=get_beat_grid,
-        BeatTracker=BeatTracker,
-        load_config=load_config,
-        error=None,
-    )
+    _pipeline_error = None
 except ImportError as e:
-    _import_error = str(e)
-    pipeline = {"error": _import_error}
+    _pipeline_error = str(e)
+
+# ── Minimal CSS ───────────────────────────────────────────────────────────────
 
 st.markdown("""
 <style>
-    /* Tighten up the sidebar */
-    section[data-testid="stSidebar"] { min-width: 300px; max-width: 320px; }
-    /* Phase status pills */
-    .phase-ok   { color: #2ecc71; font-weight: 600; }
-    .phase-warn { color: #f39c12; font-weight: 600; }
-    .phase-err  { color: #e74c3c; font-weight: 600; }
-    /* Note table tweaks */
+    section[data-testid="stSidebar"] { min-width: 300px; max-width: 330px; }
     .stDataFrame { font-size: 0.85rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Sidebar — settings ────────────────────────────────────────────────────────
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
     st.title("🎵 meloScribe")
     st.caption("Melody transcription for saxophone")
     st.divider()
 
-    st.subheader("Settings")
-
-    # Load config defaults if available
     cfg = {}
-    if "error" not in pipeline:
+    if not _pipeline_error:
         try:
-            cfg = pipeline["load_config"]()
+            cfg = load_config()
         except Exception:
             pass
+
+    st.subheader("Core settings")
 
     confidence = st.slider(
         "Confidence threshold",
         min_value=0.0, max_value=1.0,
         value=float(cfg.get("confidence", 0.85)),
         step=0.05,
-        help="Minimum pitch detection confidence. Higher = fewer but more accurate notes."
+        help="Minimum pitch detection confidence. Higher = fewer but more accurate notes.",
     )
 
     transpose = st.number_input(
@@ -95,7 +78,7 @@ with st.sidebar:
         min_value=-24, max_value=24,
         value=int(cfg.get("transpose", 9)),
         step=1,
-        help="9 = alto sax (Eb). 0 = concert pitch."
+        help="9 = alto sax (Eb). 0 = concert pitch.",
     )
 
     output_format = st.selectbox(
@@ -105,19 +88,50 @@ with st.sidebar:
     )
 
     st.divider()
-    st.subheader("Optional enhancements")
+    st.subheader("Filtering & smoothing")
+
+    use_key_filter = st.toggle(
+        "Key-aware filtering",
+        value=bool(cfg.get("key_filter", True)),
+        help="Remove notes outside the detected key. Eliminates most overtone hits.",
+    )
+
+    use_smooth = st.toggle(
+        "Note smoothing",
+        value=bool(cfg.get("smooth", True)),
+        help="Merge flickering same-note pairs and remove short octave outliers.",
+    )
+
+    st.divider()
+    st.subheader("Cross-validation")
 
     use_dual_pitch = st.toggle(
         "PYIN cross-validation",
         value=bool(cfg.get("dual_pitch", False)),
-        help="Runs a second pitch model for better accuracy. Adds ~15s."
+        help="Runs a second pitch model and penalises disagreeing notes. Adds ~15–30s.",
     )
 
     use_chord_context = st.toggle(
         "Chord context",
         value=bool(cfg.get("chord_context", False)),
-        help="Extracts chord timeline from the backing track. Requires full MP3 input."
+        help="Annotates notes with chord fit from the backing track.",
     )
+
+    other_wav_path = None
+    if use_chord_context:
+        other_wav_input = st.text_input(
+            "Path to other.wav",
+            value="",
+            placeholder=r"e.g. C:\...\separated\htdemucs\sample\other.wav",
+            help="Full path to the other.wav stem Demucs produced for this song.",
+        )
+        if other_wav_input.strip():
+            p = Path(other_wav_input.strip())
+            if p.exists() and p.suffix.lower() == ".wav":
+                other_wav_path = str(p)
+                st.caption(f"✓ Found: {p.name}")
+            else:
+                st.warning("File not found or not a .wav — chord context will be skipped.")
 
     st.divider()
     st.caption("meloScribe — passion project 🎷")
@@ -126,8 +140,8 @@ with st.sidebar:
 
 st.header("Melody Transcription")
 
-if pipeline.get("error"):
-    st.error(f"Pipeline failed to load: {pipeline['error']}\n\nMake sure all pipeline modules are installed.")
+if _pipeline_error:
+    st.error(f"Pipeline failed to load: {_pipeline_error}\n\nMake sure `pipeline/` contains all modules.")
     st.stop()
 
 # ── File inputs ───────────────────────────────────────────────────────────────
@@ -144,30 +158,22 @@ with col_left:
     )
 
     if "MP3" in input_mode:
-        audio_file = st.file_uploader(
-            "Upload MP3", type=["mp3"],
-            help="The full song — Demucs will separate the vocals automatically."
-        )
+        audio_file  = st.file_uploader("Upload MP3", type=["mp3"])
         vocals_file = None
     else:
-        audio_file = None
-        vocals_file = st.file_uploader(
-            "Upload vocals.wav", type=["wav"],
-            help="Already-stemmed vocals track — skips the slow Demucs step."
-        )
+        audio_file  = None
+        vocals_file = st.file_uploader("Upload vocals.wav", type=["wav"])
 
 with col_right:
     st.subheader("Lyrics (optional)")
-    lyrics_file = st.file_uploader(
-        "Upload .lrc file", type=["lrc"],
-        help="Time-synced lyrics. If omitted, notes will have no lyric attached."
-    )
+    lyrics_file = st.file_uploader("Upload .lrc file", type=["lrc"])
     if lyrics_file:
         st.caption(f"✓ {lyrics_file.name} loaded")
 
 # ── Run button ────────────────────────────────────────────────────────────────
 
 has_input = audio_file is not None or vocals_file is not None
+
 run_btn = st.button(
     "▶  Transcribe",
     type="primary",
@@ -184,12 +190,13 @@ if run_btn and has_input:
     st.divider()
     st.subheader("Progress")
 
-    # Write uploaded files to temp dir
     tmp_dir = tempfile.mkdtemp()
-    results = {}
+    results    = {}
+    pyin_rate  = ""
+    chord_rate = ""
 
     try:
-        # Save audio
+        # Save uploaded files to temp dir
         if audio_file:
             audio_path = os.path.join(tmp_dir, audio_file.name)
             with open(audio_path, "wb") as f:
@@ -197,13 +204,12 @@ if run_btn and has_input:
             input_path  = audio_path
             vocals_path = None
         else:
-            vocals_path_tmp = os.path.join(tmp_dir, vocals_file.name)
-            with open(vocals_path_tmp, "wb") as f:
+            vp = os.path.join(tmp_dir, vocals_file.name)
+            with open(vp, "wb") as f:
                 f.write(vocals_file.getbuffer())
             input_path  = None
-            vocals_path = vocals_path_tmp
+            vocals_path = vp
 
-        # Save lyrics
         lyrics_path = None
         if lyrics_file:
             lyrics_path = os.path.join(tmp_dir, lyrics_file.name)
@@ -217,31 +223,32 @@ if run_btn and has_input:
                 s1.update(label="Phase 1 — Vocals ready (pre-stemmed) ✓", state="complete")
             else:
                 st.write(f"Running Demucs on `{Path(input_path).name}`…")
-                st.write("⏳ This takes 1–3 minutes depending on your hardware.")
+                st.write("⏳ This takes 1–3 minutes depending on hardware.")
                 t0 = time.time()
-                vocals_path = pipeline["isolate_vocals"](input_path)
+                vocals_path = isolate_vocals(input_path)
                 elapsed = time.time() - t0
-                st.write(f"✓ Vocals isolated in {elapsed:.0f}s → `{Path(vocals_path).name}`")
+                st.write(f"✓ Isolated in {elapsed:.0f}s → `{Path(vocals_path).name}`")
                 s1.update(label=f"Phase 1 — Vocals separated ({elapsed:.0f}s) ✓", state="complete")
 
         # ── Phase 2: Pitch ───────────────────────────────────────────────────
         with st.status("Phase 2 — Detecting pitch…", expanded=True) as s2:
             t0 = time.time()
-            pitch_data = pipeline["detect_pitch"](vocals_path)
+            pitch_data = detect_pitch(vocals_path)
             elapsed = time.time() - t0
-            st.write(f"✓ {len(pitch_data):,} pitch frames detected in {elapsed:.1f}s")
-            s2.update(label=f"Phase 2 — Pitch detected ({len(pitch_data):,} frames) ✓", state="complete")
+            st.write(f"✓ {len(pitch_data):,} pitch frames in {elapsed:.1f}s")
+            s2.update(label=f"Phase 2 — {len(pitch_data):,} pitch frames ✓", state="complete")
 
         # ── Phase 2b: Beat grid ──────────────────────────────────────────────
         beat_grid = None
         with st.status("Phase 2b — Beat grid…", expanded=False) as s2b:
             try:
-                beat_grid = pipeline["get_beat_grid"](vocals_path)
-                st.write(f"✓ {beat_grid['bpm']:.1f} BPM, {len(beat_grid['beat_times'])} beats")
-                s2b.update(label=f"Phase 2b — Beat grid: {beat_grid['bpm']:.1f} BPM ✓", state="complete")
+                beat_grid = get_beat_grid(vocals_path)
+                s2b.update(
+                    label=f"Phase 2b — {beat_grid['bpm']:.1f} BPM, {len(beat_grid['beat_times'])} beats ✓",
+                    state="complete",
+                )
             except Exception as e:
-                st.write(f"⚠ Beat detection failed: {e}")
-                s2b.update(label="Phase 2b — Beat grid skipped ⚠", state="error")
+                s2b.update(label=f"Phase 2b — Beat grid skipped ⚠", state="error")
 
         # ── Phase 2c: PYIN ───────────────────────────────────────────────────
         pyin_data = None
@@ -255,83 +262,77 @@ if run_btn and has_input:
                     st.write(f"✓ {len(pyin_data):,} voiced frames in {elapsed:.1f}s")
                     s2c.update(label=f"Phase 2c — PYIN: {len(pyin_data):,} frames ✓", state="complete")
                 except Exception as e:
-                    st.write(f"⚠ PYIN failed: {e}")
+                    st.write(f"⚠ {e}")
                     s2c.update(label="Phase 2c — PYIN skipped ⚠", state="error")
 
         # ── Phase 2d: Chord context ──────────────────────────────────────────
         chord_timeline = None
         if use_chord_context:
             with st.status("Phase 2d — Chord context…", expanded=True) as s2d:
-                try:
-                    from chord_tracker import get_chord_timeline
-                    from stemmer import get_stem_paths
-                    stem_paths = get_stem_paths(input_path or vocals_path)
-                    beat_times = beat_grid["beat_times"] if beat_grid else []
-                    chord_timeline = get_chord_timeline(stem_paths["other"], beat_times)
-                    st.write(f"✓ {len(chord_timeline)} chord entries")
-                    s2d.update(label=f"Phase 2d — Chords: {len(chord_timeline)} entries ✓", state="complete")
-                except Exception as e:
-                    st.write(f"⚠ Chord extraction failed: {e}")
-                    s2d.update(label="Phase 2d — Chord context skipped ⚠", state="error")
+                if not other_wav_path:
+                    st.write("⚠ No valid other.wav path set in sidebar.")
+                    s2d.update(label="Phase 2d — Chord context skipped (no path) ⚠", state="error")
+                else:
+                    try:
+                        from chord_tracker import get_chord_timeline
+                        beat_times = beat_grid["beat_times"] if beat_grid else []
+                        chord_timeline = get_chord_timeline(other_wav_path, beat_times)
+                        st.write(f"✓ {len(chord_timeline)} chord entries")
+                        s2d.update(label=f"Phase 2d — {len(chord_timeline)} chord entries ✓", state="complete")
+                    except Exception as e:
+                        st.write(f"⚠ {e}")
+                        s2d.update(label="Phase 2d — Chord context failed ⚠", state="error")
 
         # ── Phase 3: Note mapping ────────────────────────────────────────────
         with st.status("Phase 3 — Mapping notes…", expanded=False) as s3:
-            note_events = pipeline["map_notes"](
+            note_events = map_notes(
                 pitch_data, confidence,
                 transpose=transpose,
+                apply_key_filter=use_key_filter,
+                smooth=use_smooth,
                 pyin_data=pyin_data,
                 chord_timeline=chord_timeline,
             )
             if beat_grid:
-                tracker = pipeline["BeatTracker"]()
+                tracker = BeatTracker()
                 note_events = tracker.annotate_beat_alignment(note_events, beat_grid)
 
-            pyin_rate = ""
             if pyin_data:
                 agreed = sum(1 for e in note_events if e.get("pyin_agrees"))
                 pyin_rate = f" · PYIN: {agreed}/{len(note_events)} agreed"
-
-            chord_rate = ""
             if chord_timeline:
                 fit = sum(1 for e in note_events if e.get("chord_fit"))
                 chord_rate = f" · Chord fit: {fit}/{len(note_events)}"
 
             s3.update(
                 label=f"Phase 3 — {len(note_events)} note events{pyin_rate}{chord_rate} ✓",
-                state="complete"
+                state="complete",
             )
 
         # ── Phase 4: Lyrics ──────────────────────────────────────────────────
         with st.status("Phase 4 — Aligning lyrics…", expanded=False) as s4:
-            aligned_events = pipeline["align_lyrics_to_notes"](note_events, lyrics_path)
+            aligned_events = align_lyrics_to_notes(note_events, lyrics_path)
             matched = sum(1 for e in aligned_events if e.get("lyric") is not None)
-            if lyrics_path:
-                s4.update(label=f"Phase 4 — Lyrics: {matched}/{len(aligned_events)} matched ✓", state="complete")
-            else:
-                s4.update(label="Phase 4 — No lyrics provided", state="complete")
+            label = (f"Phase 4 — Lyrics: {matched}/{len(aligned_events)} matched ✓"
+                     if lyrics_path else "Phase 4 — No lyrics provided")
+            s4.update(label=label, state="complete")
 
-        # ── Key detection ────────────────────────────────────────────────────
-        key_result = pipeline["detect_key"](aligned_events)
-
-        # ── Phase 5: Format output ───────────────────────────────────────────
-        output_text = pipeline["format_output"](aligned_events, format_type=output_format)
+        key_result  = detect_key(aligned_events)
+        output_text = format_output(aligned_events, format_type=output_format)
 
         results = {
             "aligned_events": aligned_events,
-            "key_result": key_result,
-            "output_text": output_text,
-            "note_count": len(aligned_events),
-            "pyin_rate": pyin_rate,
-            "chord_rate": chord_rate,
-            "bpm": beat_grid["bpm"] if beat_grid else None,
+            "key_result":     key_result,
+            "output_text":    output_text,
+            "note_count":     len(aligned_events),
+            "bpm":            beat_grid["bpm"] if beat_grid else None,
         }
 
     except Exception as e:
         st.error(f"Pipeline error: {e}")
-        import traceback
         with st.expander("Full traceback"):
+            import traceback
             st.code(traceback.format_exc())
-        results = {}
 
     # ── Results ───────────────────────────────────────────────────────────────
 
@@ -339,26 +340,20 @@ if run_btn and has_input:
         st.divider()
         st.subheader("Results")
 
-        # Summary metrics
         key = results["key_result"]
-        candidates_str = "  ·  ".join(
-            f"{k} ({v:.0%})" for k, v in key["candidates"]
-        )
+        candidates_str = "  ·  ".join(f"{k} ({v:.0%})" for k, v in key["candidates"])
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Notes detected", results["note_count"])
         m2.metric("Estimated key", key["key"])
         m3.metric("Key confidence", f"{key['score']:.0%}")
-        if results["bpm"]:
-            m4.metric("Tempo", f"{results['bpm']:.0f} BPM")
-        else:
-            m4.metric("Tempo", "—")
-
+        m4.metric("Tempo", f"{results['bpm']:.0f} BPM" if results["bpm"] else "—")
         st.caption(f"Key candidates: {candidates_str}")
+        if pyin_rate or chord_rate:
+            st.caption(f"Cross-validation:{pyin_rate}{chord_rate}")
 
         st.divider()
 
-        # Tabs: formatted output + raw table
         tab_output, tab_table, tab_download = st.tabs(["Output", "Note table", "Download"])
 
         with tab_output:
@@ -366,14 +361,10 @@ if run_btn and has_input:
 
         with tab_table:
             import pandas as pd
-            # Show clean subset of columns
-            events = results["aligned_events"]
-            display_cols = ["note", "start_time", "end_time", "confidence", "lyric"]
-            optional_cols = ["beat_aligned", "pyin_agrees", "chord_fit"]
-            for col in optional_cols:
-                if events and col in events[0]:
-                    display_cols.append(col)
-
+            events       = results["aligned_events"]
+            base_cols    = ["note", "start_time", "end_time", "confidence", "lyric"]
+            opt_cols     = ["beat_aligned", "pyin_agrees", "chord_fit"]
+            display_cols = base_cols + [c for c in opt_cols if events and c in events[0]]
             df = pd.DataFrame(events)[display_cols]
             df["start_time"] = df["start_time"].round(3)
             df["end_time"]   = df["end_time"].round(3)
@@ -381,9 +372,7 @@ if run_btn and has_input:
             st.dataframe(df, use_container_width=True, height=400)
 
         with tab_download:
-            st.write("Download the transcription in your chosen format:")
-
-            file_ext = {"table": "txt", "leadsheet": "txt", "csv": "csv", "json": "json"}
+            file_ext  = {"table": "txt", "leadsheet": "txt", "csv": "csv",  "json": "json"}
             mime_type = {"table": "text/plain", "leadsheet": "text/plain",
                          "csv": "text/csv", "json": "application/json"}
 
@@ -394,13 +383,9 @@ if run_btn and has_input:
                 mime=mime_type[output_format],
                 use_container_width=True,
             )
-
-            # Also always offer JSON of full events
-            import json
-            json_full = json.dumps(results["aligned_events"], indent=2)
             st.download_button(
                 label="⬇  Download full JSON (all fields)",
-                data=json_full,
+                data=json.dumps(results["aligned_events"], indent=2),
                 file_name="transcription_full.json",
                 mime="application/json",
                 use_container_width=True,

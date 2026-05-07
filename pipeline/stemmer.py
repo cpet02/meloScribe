@@ -168,24 +168,22 @@ def get_stem_paths(input_path: str) -> Dict[str, str]:
     Does not re-run stemming — assumes isolate_vocals() has already been called.
     Returns {'vocals': str, 'other': str}.
 
-    The Demucs output structure is:
-        separated/htdemucs/{stem_name}/vocals.wav
-        separated/htdemucs/{stem_name}/other.wav
-
-    Args:
-        input_path: Path to the original input file (MP3 or WAV)
-
-    Returns:
-        Dict with keys 'vocals' and 'other', each an absolute path string
+    Accepts either the original input file (e.g. song.mp3) or the vocals
+    stem path itself (e.g. separated/htdemucs/song/vocals.wav) — both resolve
+    to the same stem directory.
 
     Raises:
         FileNotFoundError: If either stem file does not exist on disk
     """
     input_path = Path(input_path).resolve()
-    stem_name  = input_path.stem
 
-    separated_dir = Path(__file__).parent.parent / "separated"
-    base_dir      = separated_dir / "htdemucs" / stem_name
+    # If passed the vocals.wav itself, walk up to the stem directory
+    if input_path.name == 'vocals.wav' and input_path.parent.parent.name == 'htdemucs':
+        base_dir = input_path.parent
+    else:
+        stem_name     = input_path.stem
+        separated_dir = Path(__file__).parent.parent / "separated"
+        base_dir      = separated_dir / "htdemucs" / stem_name
 
     vocals_path = base_dir / "vocals.wav"
     other_path  = base_dir / "other.wav"
