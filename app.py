@@ -11,8 +11,10 @@ from pathlib import Path
 
 import streamlit as st
 
-# Add pipeline to path
-sys.path.insert(0, str(Path(__file__).parent / "pipeline"))
+# Add pipeline to path — must happen before any pipeline imports
+_pipeline_dir = str(Path(__file__).parent / "pipeline")
+if _pipeline_dir not in sys.path:
+    sys.path.insert(0, _pipeline_dir)
 
 # ── Page config ──────────────────────────────────────────────────────────────
 
@@ -23,7 +25,32 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Minimal custom CSS ────────────────────────────────────────────────────────
+# ── Pipeline imports ──────────────────────────────────────────────────────────
+
+_import_error = None
+try:
+    from stemmer import isolate_vocals
+    from pitch_detector import detect_pitch
+    from note_mapper import map_notes, detect_key
+    from lyric_aligner import align_lyrics_to_notes
+    from output import format_output
+    from beat_tracker import get_beat_grid, BeatTracker
+    from config import load_config
+    pipeline = dict(
+        isolate_vocals=isolate_vocals,
+        detect_pitch=detect_pitch,
+        map_notes=map_notes,
+        detect_key=detect_key,
+        align_lyrics_to_notes=align_lyrics_to_notes,
+        format_output=format_output,
+        get_beat_grid=get_beat_grid,
+        BeatTracker=BeatTracker,
+        load_config=load_config,
+        error=None,
+    )
+except ImportError as e:
+    _import_error = str(e)
+    pipeline = {"error": _import_error}
 
 st.markdown("""
 <style>
@@ -37,34 +64,6 @@ st.markdown("""
     .stDataFrame { font-size: 0.85rem; }
 </style>
 """, unsafe_allow_html=True)
-
-# ── Pipeline import (lazy, with friendly error) ───────────────────────────────
-
-@st.cache_resource
-def load_pipeline():
-    try:
-        from stemmer import isolate_vocals
-        from pitch_detector import detect_pitch
-        from note_mapper import map_notes, detect_key
-        from lyric_aligner import align_lyrics_to_notes
-        from output import format_output
-        from beat_tracker import get_beat_grid, BeatTracker
-        from config import load_config
-        return dict(
-            isolate_vocals=isolate_vocals,
-            detect_pitch=detect_pitch,
-            map_notes=map_notes,
-            detect_key=detect_key,
-            align_lyrics_to_notes=align_lyrics_to_notes,
-            format_output=format_output,
-            get_beat_grid=get_beat_grid,
-            BeatTracker=BeatTracker,
-            load_config=load_config,
-        )
-    except ImportError as e:
-        return {"error": str(e)}
-
-pipeline = load_pipeline()
 
 # ── Sidebar — settings ────────────────────────────────────────────────────────
 
@@ -127,7 +126,7 @@ with st.sidebar:
 
 st.header("Melody Transcription")
 
-if "error" in pipeline:
+if pipeline.get("error"):
     st.error(f"Pipeline failed to load: {pipeline['error']}\n\nMake sure all pipeline modules are installed.")
     st.stop()
 
