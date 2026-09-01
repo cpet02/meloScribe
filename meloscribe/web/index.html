@@ -80,6 +80,10 @@
     margin-bottom: 6px; cursor: pointer; font-size: 13px;
   }
   .result-item:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .voters-col { display: none; }
+  body.show-voters .voters-col { display: table-cell; }
+  .voter-scores { font-family: ui-monospace, Consolas, monospace; font-size: 11px; white-space: nowrap; }
+  .voter-scores .weak { color: var(--err); }
   code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
 </style>
 </head>
@@ -197,10 +201,15 @@
       <button class="secondary" data-dl="midi">MIDI</button>
     </div>
     <div id="warnings"></div>
+    <label class="meta" style="display:flex;align-items:center;gap:7px;margin:4px 0 10px">
+      <input type="checkbox" id="showVoters" style="width:auto;margin:0">
+      Show per-voter breakdown — what each estimator scored for the chosen note
+    </label>
     <div class="scroll">
       <table>
         <thead><tr><th>#</th><th>Note</th><th>Start</th><th>Dur</th>
-          <th>Conf</th><th>Cents</th><th>Lyric</th></tr></thead>
+          <th>Conf</th><th>Cents</th><th>Lyric</th>
+          <th class="voters-col">Voters</th></tr></thead>
         <tbody id="noteRows"></tbody>
       </table>
     </div>
@@ -383,10 +392,23 @@ async function loadResult(job) {
       <td>${n.confidence.toFixed(2)}</td>
       <td>${n.cents_off > 0 ? '+' : ''}${n.cents_off.toFixed(0)}</td>
       <td>${escapeHtml(n.lyric || '')}</td>
+      <td class="voters-col voter-scores">${voterCell(n.voters)}</td>
     </tr>`).join('');
 
   drawRoll();
 }
+
+// Voters that disagree with the decoded note are the interesting ones, so a
+// low score is coloured rather than left to be spotted by eye.
+function voterCell(voters) {
+  if (!voters) return '';
+  return Object.entries(voters).map(([name, score]) =>
+    `<span class="${score < 0.5 ? 'weak' : ''}">${escapeHtml(name)} ${score.toFixed(2)}</span>`
+  ).join(' · ');
+}
+
+$('showVoters').onchange = e =>
+  document.body.classList.toggle('show-voters', e.target.checked);
 
 /* ---------- piano roll ---------- */
 function drawRoll() {
