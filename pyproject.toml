@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meloscribe"
+version = "2.0.0"
+description = "Vocal melody transcription with multi-voter pitch estimation and automatic lyric syncing"
+readme = "README.md"
+requires-python = ">=3.9"
+
+# torch is deliberately absent: installing it from PyPI here would pull the
+# CPU-only build and silently disable the GPU. It must be installed first,
+# from the PyTorch index - see the README.
+dependencies = [
+    "numpy",
+    "scipy",
+    "librosa",
+    "soundfile",
+    "demucs",
+    "basic-pitch",
+    "mutagen",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "pydantic>=2",
+    "pretty_midi",
+]
+
+[project.optional-dependencies]
+# Each measurably improves results; a missing one disables its feature with a
+# warning rather than breaking the run.
+extras = ["torchcrepe", "faster-whisper"]
+dev = ["pytest", "mir_eval", "httpx"]
+
+[project.scripts]
+meloscribe = "meloscribe.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["meloscribe*"]
+
+[tool.setuptools.package-data]
+meloscribe = ["web/*.html"]
+
+[tool.pytest.ini_options]
+markers = ["slow: end-to-end tests that run a real transcription"]

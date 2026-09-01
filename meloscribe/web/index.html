@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>meloScribe</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --panel: #ffffff; --border: #e3e0da; --text: #1c1b19;
+    --muted: #6d6a64; --accent: #b4530a; --accent-soft: #fdf0e4;
+    --ok: #2f7d4f; --warn: #96690b; --err: #a33a2a;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16151a; --panel: #1e1d23; --border: #33313a; --text: #ecebe8;
+      --muted: #9d9aa3; --accent: #f08a3c; --accent-soft: #2a2119;
+      --ok: #6bcf95; --warn: #e0b558; --err: #ef8a76;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1000px; margin: 0 auto; padding: 32px 20px 80px; }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+  h1 { font-size: 26px; margin: 0; letter-spacing: -0.02em; }
+  .tagline { color: var(--muted); font-size: 14px; margin: 0 0 26px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 18px;
+  }
+  .panel h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 0 0 14px; font-weight: 600;
+  }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
+  input, select, button {
+    font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button {
+    background: var(--accent); color: #fff; border: none; cursor: pointer;
+    padding: 9px 18px; font-weight: 600;
+  }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); font-weight: 500; }
+  #drop {
+    border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 34px; text-align: center; color: var(--muted); cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  #drop.over, #drop:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .hidden { display: none !important; }
+  .bar { height: 8px; background: var(--border); border-radius: 99px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .pill {
+    display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 12px;
+    background: var(--accent-soft); color: var(--accent); font-weight: 600;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  tr.low td { color: var(--muted); font-style: italic; }
+  .scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; }
+  .msg { padding: 10px 12px; border-radius: 7px; font-size: 13px; margin-top: 10px; }
+  .msg.err { background: color-mix(in srgb, var(--err) 12%, transparent); color: var(--err); }
+  .msg.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }
+  .msg.ok { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
+  #roll { width: 100%; height: 220px; display: block; }
+  .results-list { max-height: 190px; overflow-y: auto; }
+  .result-item {
+    padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px;
+    margin-bottom: 6px; cursor: pointer; font-size: 13px;
+  }
+  .result-item:hover { border-color: var(--accent); background: var(--accent-soft); }
+  code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>meloScribe</h1>
+    <span class="meta" id="health">checking…</span>
+  </header>
+  <p class="tagline">Vocal melody transcription with multi-voter pitch estimation.</p>
+
+  <section class="panel">
+    <h2>1 · Audio</h2>
+    <div id="drop">
+      <strong>Drop an audio file here</strong><br>
+      <span class="meta">or click to browse — mp3, wav, flac, m4a, ogg</span>
+    </div>
+    <input type="file" id="file" class="hidden" accept=".mp3,.wav,.flac,.m4a,.ogg,.opus,.aac">
+    <div id="uploaded" class="hidden" style="margin-top:12px">
+      <span class="pill" id="upname"></span>
+      <span class="meta" id="updur"></span>
+    </div>
+  </section>
+
+  <section class="panel" id="detailsPanel">
+    <h2>2 · Track details</h2>
+    <div class="grid">
+      <div>
+        <label for="track">Track name <span style="color:var(--accent)">*</span></label>
+        <input id="track" placeholder="Karma Police" style="width:100%">
+      </div>
+      <div>
+        <label for="artist">Artist</label>
+        <input id="artist" placeholder="Radiohead" style="width:100%">
+      </div>
+      <div>
+        <label for="lyricsMode">Lyrics</label>
+        <select id="lyricsMode" style="width:100%">
+          <option value="align" selected>Fetch + align to words</option>
+          <option value="lookup">Fetch only (LRC timings)</option>
+          <option value="transcribe">Fetch, else transcribe audio</option>
+          <option value="off">Disabled</option>
+        </select>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="secondary" id="searchBtn">Search LRClib</button>
+      <span class="meta" id="searchMeta"></span>
+    </div>
+    <div id="searchResults" class="results-list" style="margin-top:10px"></div>
+    <div id="nameWarn" class="msg warn hidden">
+      A track name is required unless lyrics are disabled.
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>3 · Options</h2>
+    <div class="grid">
+      <div>
+        <label for="preset">Separation quality</label>
+        <select id="preset" style="width:100%">
+          <option value="fast">Fast — htdemucs, no shifts</option>
+          <option value="balanced" selected>Balanced — htdemucs_ft</option>
+          <option value="max">Max — ft + shifts (slow)</option>
+        </select>
+      </div>
+      <div>
+        <label for="transpose">Transpose (semitones)</label>
+        <select id="transpose" style="width:100%">
+          <option value="0" selected>0 — concert pitch</option>
+          <option value="9">+9 — alto sax (E♭)</option>
+          <option value="2">+2 — tenor/soprano sax (B♭)</option>
+        </select>
+      </div>
+      <div>
+        <label for="confidence">Min confidence</label>
+        <input id="confidence" type="number" min="0" max="1" step="0.05" value="0" style="width:100%">
+      </div>
+      <div>
+        <label for="vocalsOnly">Input type</label>
+        <select id="vocalsOnly" style="width:100%">
+          <option value="false" selected>Full mix — separate stems</option>
+          <option value="true">Already an isolated vocal</option>
+        </select>
+      </div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="runBtn" disabled>Transcribe</button>
+      <button class="secondary hidden" id="cancelBtn">Cancel</button>
+    </div>
+  </section>
+
+  <section class="panel hidden" id="progressPanel">
+    <h2>Progress</h2>
+    <div class="bar"><div id="barFill"></div></div>
+    <div class="row" style="margin-top:8px">
+      <span class="meta" id="progressMsg">queued</span>
+      <span class="meta" id="progressPct"></span>
+    </div>
+    <div id="jobError" class="msg err hidden"></div>
+  </section>
+
+  <section class="panel hidden" id="resultPanel">
+    <h2>Result</h2>
+    <div class="row" style="margin-bottom:12px">
+      <span class="pill" id="noteCount"></span>
+      <span class="meta" id="resultMeta"></span>
+    </div>
+    <canvas id="roll"></canvas>
+    <div class="row" style="margin:14px 0">
+      <button class="secondary" data-dl="csv">CSV</button>
+      <button class="secondary" data-dl="json">JSON</button>
+      <button class="secondary" data-dl="leadsheet">Lead sheet</button>
+      <button class="secondary" data-dl="lrc">LRC</button>
+      <button class="secondary" data-dl="midi">MIDI</button>
+    </div>
+    <div id="warnings"></div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>#</th><th>Note</th><th>Start</th><th>Dur</th>
+          <th>Conf</th><th>Cents</th><th>Lyric</th></tr></thead>
+        <tbody id="noteRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let upload = null, jobId = null, poller = null, notes = [];
+
+/* ---------- health ---------- */
+fetch('/api/health').then(r => r.json()).then(h => {
+  // Report what will actually run, not merely what is installed - the two
+  // differ, and listing every available voter implies all of them are in use.
+  const missing = Object.entries(h.voters).filter(([, ok]) => !ok).map(([n]) => n);
+  // Fall back to the installed set if the server did not report an active one.
+  const active = (h.active_voters && h.active_voters.length)
+    ? h.active_voters
+    : Object.entries(h.voters).filter(([, ok]) => ok).map(([n]) => n);
+  const bits = [h.device, `voters: ${active.join(' + ')}`];
+  if (!h.forced_aligner) bits.push('no word-level alignment');
+  if (missing.length) bits.push(`not installed: ${missing.join(', ')}`);
+  $('health').textContent = bits.join(' · ');
+}).catch(() => { $('health').textContent = 'API unreachable'; });
+
+/* ---------- upload ---------- */
+$('drop').onclick = () => $('file').click();
+$('drop').ondragover = e => { e.preventDefault(); $('drop').classList.add('over'); };
+$('drop').ondragleave = () => $('drop').classList.remove('over');
+$('drop').ondrop = e => {
+  e.preventDefault();
+  $('drop').classList.remove('over');
+  if (e.dataTransfer.files[0]) sendFile(e.dataTransfer.files[0]);
+};
+$('file').onchange = e => { if (e.target.files[0]) sendFile(e.target.files[0]); };
+
+async function sendFile(file) {
+  $('drop').innerHTML = '<strong>Uploading…</strong>';
+  const body = new FormData();
+  body.append('file', file);
+  try {
+    const res = await fetch('/api/upload', { method: 'POST', body });
+    if (!res.ok) throw new Error((await res.json()).detail);
+    upload = await res.json();
+    $('drop').innerHTML = '<strong>Drop another file</strong><br>' +
+      '<span class="meta">or click to browse</span>';
+    $('uploaded').classList.remove('hidden');
+    $('upname').textContent = upload.filename;
+    $('updur').textContent = upload.duration
+      ? ` ${Math.floor(upload.duration / 60)}:${String(Math.round(upload.duration % 60)).padStart(2, '0')}` : '';
+    // Prefill from tags, but leave the user to confirm it.
+    if (upload.suggested.track_name && !$('track').value)
+      $('track').value = upload.suggested.track_name;
+    if (upload.suggested.artist_name && !$('artist').value)
+      $('artist').value = upload.suggested.artist_name;
+    validate();
+  } catch (err) {
+    $('drop').innerHTML = `<strong style="color:var(--err)">Upload failed</strong>
+      <br><span class="meta">${err.message}</span>`;
+  }
+}
+
+/* ---------- the naming gate ---------- */
+function validate() {
+  const needsName = $('lyricsMode').value !== 'off';
+  const hasName = $('track').value.trim().length > 0;
+  const ok = upload && (!needsName || hasName);
+  $('runBtn').disabled = !ok;
+  $('nameWarn').classList.toggle('hidden', !(upload && needsName && !hasName));
+  return ok;
+}
+['track', 'lyricsMode'].forEach(id => {
+  $(id).addEventListener('input', validate);
+  $(id).addEventListener('change', validate);
+});
+
+/* ---------- lyric search ---------- */
+$('searchBtn').onclick = async () => {
+  const track = $('track').value.trim();
+  if (!track) { $('searchMeta').textContent = 'Enter a track name first'; return; }
+  $('searchMeta').textContent = 'searching…';
+  const params = new URLSearchParams({ track, artist: $('artist').value.trim() });
+  if (upload?.duration) params.set('duration', upload.duration);
+  try {
+    const { results } = await (await fetch('/api/lyrics/search?' + params)).json();
+    $('searchMeta').textContent = `${results.length} result(s)`;
+    $('searchResults').innerHTML = results.map(r => `
+      <div class="result-item" data-track="${escapeAttr(r.track_name)}"
+           data-artist="${escapeAttr(r.artist_name)}">
+        <strong>${escapeHtml(r.artist_name)} — ${escapeHtml(r.track_name)}</strong>
+        <div class="meta">${Math.round(r.duration)}s
+          ${r.duration_delta != null ? `(${r.duration_delta > 3 ? '⚠ ' : ''}${r.duration_delta.toFixed(0)}s off)` : ''}
+          · ${r.instrumental ? 'instrumental' : r.synced ? 'synced' : 'plain only'}</div>
+      </div>`).join('') || '<div class="meta">Nothing found.</div>';
+    document.querySelectorAll('.result-item').forEach(el => el.onclick = () => {
+      $('track').value = el.dataset.track;
+      $('artist').value = el.dataset.artist;
+      validate();
+    });
+  } catch (err) {
+    $('searchMeta').textContent = 'search failed';
+  }
+};
+
+/* ---------- run ---------- */
+$('runBtn').onclick = async () => {
+  if (!validate()) return;
+  $('runBtn').disabled = true;
+  $('resultPanel').classList.add('hidden');
+  $('progressPanel').classList.remove('hidden');
+  $('jobError').classList.add('hidden');
+
+  const payload = {
+    upload_id: upload.upload_id,
+    track_name: $('track').value.trim(),
+    artist_name: $('artist').value.trim(),
+    lyrics_mode: $('lyricsMode').value,
+    preset: $('preset').value,
+    transpose: parseInt($('transpose').value, 10),
+    confidence: parseFloat($('confidence').value) || 0,
+    vocals_only: $('vocalsOnly').value === 'true',
+  };
+
+  try {
+    const res = await fetch('/api/jobs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail);
+    jobId = (await res.json()).id;
+    $('cancelBtn').classList.remove('hidden');
+    poller = setInterval(poll, 700);
+  } catch (err) {
+    showError(err.message);
+    $('runBtn').disabled = false;
+  }
+};
+
+$('cancelBtn').onclick = async () => {
+  if (jobId) await fetch('/api/jobs/' + jobId, { method: 'DELETE' });
+};
+
+async function poll() {
+  if (!jobId) return;
+  const job = await (await fetch('/api/jobs/' + jobId)).json();
+  $('barFill').style.width = (job.progress * 100) + '%';
+  $('progressMsg').textContent = job.message;
+  $('progressPct').textContent = Math.round(job.progress * 100) + '%';
+
+  if (['done', 'failed', 'cancelled'].includes(job.status)) {
+    clearInterval(poller);
+    $('cancelBtn').classList.add('hidden');
+    $('runBtn').disabled = false;
+    if (job.status === 'done') loadResult(job);
+    else if (job.status === 'failed') showError(job.error);
+  }
+}
+
+function showError(text) {
+  $('jobError').textContent = text || 'Unknown error';
+  $('jobError').classList.remove('hidden');
+}
+
+async function loadResult(job) {
+  const data = await (await fetch(`/api/jobs/${jobId}/notes`)).json();
+  notes = data.notes;
+  $('resultPanel').classList.remove('hidden');
+  $('noteCount').textContent = `${notes.length} notes`;
+  $('resultMeta').textContent =
+    [data.key && `key ${data.key}`, data.lyrics,
+     job.summary && `${job.summary.elapsed_s}s`].filter(Boolean).join(' · ');
+
+  $('warnings').innerHTML = (data.warnings || [])
+    .map(w => `<div class="msg warn">${escapeHtml(w)}</div>`).join('');
+
+  $('noteRows').innerHTML = notes.map((n, i) => `
+    <tr class="${n.confidence < 0.5 ? 'low' : ''}">
+      <td>${i + 1}</td><td><code>${n.note}</code></td>
+      <td>${n.start_time.toFixed(2)}</td><td>${n.duration.toFixed(2)}</td>
+      <td>${n.confidence.toFixed(2)}</td>
+      <td>${n.cents_off > 0 ? '+' : ''}${n.cents_off.toFixed(0)}</td>
+      <td>${escapeHtml(n.lyric || '')}</td>
+    </tr>`).join('');
+
+  drawRoll();
+}
+
+/* ---------- piano roll ---------- */
+function drawRoll() {
+  const canvas = $('roll');
+  const ratio = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth, height = 220;
+  canvas.width = width * ratio; canvas.height = height * ratio;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(ratio, ratio);
+  ctx.clearRect(0, 0, width, height);
+  if (!notes.length) return;
+
+  const style = getComputedStyle(document.documentElement);
+  const accent = style.getPropertyValue('--accent').trim();
+  const border = style.getPropertyValue('--border').trim();
+  const muted = style.getPropertyValue('--muted').trim();
+
+  const endTime = Math.max(...notes.map(n => n.end_time));
+  const lo = Math.min(...notes.map(n => n.midi)) - 2;
+  const hi = Math.max(...notes.map(n => n.midi)) + 2;
+  const x = t => (t / endTime) * (width - 34) + 30;
+  const y = m => height - 14 - ((m - lo) / (hi - lo)) * (height - 28);
+
+  // Octave gridlines, labelled, so the vertical axis means something.
+  ctx.strokeStyle = border; ctx.fillStyle = muted;
+  ctx.font = '10px ui-monospace, monospace'; ctx.lineWidth = 1;
+  for (let m = Math.ceil(lo / 12) * 12; m <= hi; m += 12) {
+    ctx.beginPath(); ctx.moveTo(30, y(m)); ctx.lineTo(width - 4, y(m)); ctx.stroke();
+    ctx.fillText('C' + (m / 12 - 1), 4, y(m) + 3);
+  }
+
+  const rowHeight = Math.max(3, (height - 28) / (hi - lo) - 1);
+  for (const n of notes) {
+    // Opacity encodes confidence: uncertain notes look uncertain.
+    ctx.globalAlpha = 0.28 + 0.72 * Math.min(1, n.confidence);
+    ctx.fillStyle = accent;
+    ctx.fillRect(x(n.start_time), y(n.midi) - rowHeight / 2,
+                 Math.max(2, x(n.end_time) - x(n.start_time)), rowHeight);
+  }
+  ctx.globalAlpha = 1;
+}
+window.addEventListener('resize', () => notes.length && drawRoll());
+
+/* ---------- downloads ---------- */
+document.querySelectorAll('[data-dl]').forEach(btn => btn.onclick = () => {
+  if (jobId) window.location = `/api/jobs/${jobId}/download/${btn.dataset.dl}`;
+});
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function escapeAttr(s) { return escapeHtml(s); }
+</script>
+</body>
+</html>

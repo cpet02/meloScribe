@@ -6,3 +6,13 @@ separated/
 samples/sample.mp3
 samples/sample.lrc
 results.txt
+# eval harness artifacts
+data/synthetic/
+data/results/
+data/uploads/
+data/exports/
+.meloscribe_cache/
+
+# editable install
+*.egg-info/
+build/

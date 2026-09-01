@@ -1,27 +1,34 @@
-# Audio separation
-demucs
-torchaudio<2.6
+# meloScribe dependencies
+#
+# Install torch FIRST, from the PyTorch index, or pip will pull the CPU-only
+# build and the GPU sits idle. See README "Setup" for the exact command.
 
-# Pitch detection
-basic-pitch   
-
-# Audio processing
-librosa
-soundfile         # for reading/writing wav files
+# --- core -------------------------------------------------------------------
 numpy
+scipy                 # bandpass filtering in audio.py
+librosa               # CQT, PYIN, chroma, onsets, resampling
+soundfile             # WAV I/O
+demucs                # source separation (used via its Python API, not the CLI)
+basic-pitch           # note/onset posteriorgram voter
 
-# Data handling
-pandas
+# --- lyrics -----------------------------------------------------------------
+mutagen               # ID3 tags, to prefill the track name
+# LRClib is reached with urllib from the standard library - no client library.
 
-# CLI
-argparse          # built into Python stdlib, no install needed — remove this line
+# --- web UI -----------------------------------------------------------------
+fastapi
+uvicorn[standard]
+python-multipart      # required by FastAPI for file uploads
+pydantic
 
-# Output formatting
-tabulate          # for pretty terminal table output
+# --- output -----------------------------------------------------------------
+pretty_midi           # MIDI export
 
-# Testing
+# --- evaluation -------------------------------------------------------------
+mir_eval              # melody and transcription metrics
 pytest
 
-# UI
-streamlit
-pandas
+# --- optional, but each one measurably improves results ---------------------
+# torchcrepe          # the strongest pitch voter; needs torch
+# faster-whisper      # transcribe lyrics when LRClib has none
+# torchaudio          # word-level forced alignment (install with torch)
