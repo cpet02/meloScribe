@@ -258,14 +258,22 @@ def metadata_from_filename(audio_path) -> TrackQuery:
     return TrackQuery(track_name=stem)
 
 
-def describe_track(audio_path, duration: Optional[float] = None) -> TrackQuery:
+def describe_track(audio_path, duration: Optional[float] = None,
+                   original_name: Optional[str] = None) -> TrackQuery:
     """Everything we can infer about a file without asking the user.
 
     The result is a *suggestion*: the UI prefills its fields with this and the
     user confirms or corrects before the run starts. Guessing silently is how
     you end up with a beautifully aligned set of the wrong song's lyrics.
+
+    `original_name` matters for uploads. The server stores them under a
+    generated id, so falling back to the *stored* filename yields a track name
+    like 'a1900292bf3a' - which is not obviously wrong to a caller, passes the
+    "a name was provided" gate, and sends a hex string to LRClib.
     """
-    query = metadata_from_tags(audio_path) or metadata_from_filename(audio_path)
+    query = metadata_from_tags(audio_path)
+    if query is None:
+        query = metadata_from_filename(original_name or audio_path)
     if duration and not query.duration:
         query.duration = duration
     return query

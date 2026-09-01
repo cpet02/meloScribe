@@ -170,6 +170,26 @@
         </select>
       </div>
     </div>
+    <details style="margin-top:16px">
+      <summary class="meta" style="cursor:pointer">Advanced</summary>
+      <div style="margin-top:14px">
+        <label>Pitch voters</label>
+        <div class="row" id="voterBoxes" style="gap:16px"></div>
+        <div class="meta" style="margin-top:6px" id="voterHint">
+          Leave as-is unless you are diagnosing a specific note.
+        </div>
+
+        <label style="display:flex;align-items:center;gap:7px;margin-top:14px">
+          <input type="checkbox" id="force" style="width:auto;margin:0">
+          Re-separate stems, ignoring the cache
+        </label>
+        <div class="meta" style="margin-top:4px">
+          Stems are cached by audio content and settings, so this is only needed
+          if a source file changed on disk under the same name.
+        </div>
+      </div>
+    </details>
+
     <div class="row" style="margin-top:16px">
       <button id="runBtn" disabled>Transcribe</button>
       <button class="secondary hidden" id="cancelBtn">Cancel</button>
@@ -233,7 +253,37 @@ fetch('/api/health').then(r => r.json()).then(h => {
   if (!h.forced_aligner) bits.push('no word-level alignment');
   if (missing.length) bits.push(`not installed: ${missing.join(', ')}`);
   $('health').textContent = bits.join(' · ');
+  buildVoterBoxes(h, active);
 }).catch(() => { $('health').textContent = 'API unreachable'; });
+
+// Only installed voters can be selected, pre-ticked to the set that would run
+// anyway. Uninstalled ones are shown disabled rather than hidden, so a missing
+// voter is visibly missing instead of mysteriously absent.
+let autoVoters = [];
+function buildVoterBoxes(health, active) {
+  autoVoters = active.slice();
+  $('voterBoxes').innerHTML = Object.entries(health.voters).map(([name, ok]) => `
+    <label style="display:flex;align-items:center;gap:6px;margin:0"
+           title="${ok ? '' : 'not installed'}">
+      <input type="checkbox" class="voterBox" value="${name}"
+             style="width:auto;margin:0"
+             ${active.includes(name) ? 'checked' : ''} ${ok ? '' : 'disabled'}>
+      <span class="${ok ? '' : 'meta'}">${escapeHtml(name)}</span>
+    </label>`).join('');
+  document.querySelectorAll('.voterBox').forEach(b => b.onchange = validate);
+}
+
+function selectedVoters() {
+  return [...document.querySelectorAll('.voterBox:checked')].map(b => b.value);
+}
+
+function votersAreDefault() {
+  // Nothing rendered yet means we never offered a choice, so it is automatic.
+  if (!document.querySelectorAll('.voterBox').length) return true;
+  const chosen = selectedVoters();
+  return chosen.length === autoVoters.length &&
+         chosen.every(v => autoVoters.includes(v));
+}
 
 /* ---------- upload ---------- */
 $('drop').onclick = () => $('file').click();
@@ -276,9 +326,21 @@ async function sendFile(file) {
 function validate() {
   const needsName = $('lyricsMode').value !== 'off';
   const hasName = $('track').value.trim().length > 0;
-  const ok = upload && (!needsName || hasName);
+  // An empty voter set would quietly fall back to the automatic one, which
+  // looks like the selection was ignored. Block it instead - but only once the
+  // boxes exist, so a slow or failed /api/health cannot lock the button off.
+  const rendered = document.querySelectorAll('.voterBox').length > 0;
+  const hasVoters = !rendered || selectedVoters().length > 0;
+  const ok = upload && (!needsName || hasName) && hasVoters;
+
   $('runBtn').disabled = !ok;
   $('nameWarn').classList.toggle('hidden', !(upload && needsName && !hasName));
+  $('voterHint').textContent = !hasVoters
+    ? 'Select at least one voter.'
+    : (!rendered || votersAreDefault())
+      ? 'Leave as-is unless you are diagnosing a specific note.'
+      : 'Custom set — the automatic choice is ' + autoVoters.join(' + ') + '.';
+  $('voterHint').style.color = hasVoters ? '' : 'var(--err)';
   return ok;
 }
 ['track', 'lyricsMode'].forEach(id => {
@@ -331,6 +393,10 @@ $('runBtn').onclick = async () => {
     transpose: parseInt($('transpose').value, 10),
     confidence: parseFloat($('confidence').value) || 0,
     vocals_only: $('vocalsOnly').value === 'true',
+    force: $('force').checked,
+    // null means "decide automatically", which is not the same as sending the
+    // same list explicitly - it keeps following the installed-voter logic.
+    voters: votersAreDefault() ? null : selectedVoters(),
   };
 
   try {

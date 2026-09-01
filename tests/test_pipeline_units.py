@@ -299,3 +299,24 @@ def test_empty_note_list_does_not_crash_any_format():
 def test_unknown_format_is_rejected():
     with pytest.raises(ValueError, match='Unknown format'):
         render(_notes(), 'sibelius')
+
+
+def test_upload_id_is_not_used_as_a_track_name(tmp_path):
+    """Uploads are stored under a generated id, so the filename fallback must
+    use the name the user actually uploaded.
+
+    Otherwise the suggestion is a hex string, which passes the "a name was
+    provided" gate and gets sent to LRClib as a search term.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    from meloscribe.lyrics.lrclib import describe_track
+
+    stored = tmp_path / 'a1900292bf3a.wav'
+    sf.write(str(stored), np.zeros(1000), 22050)
+
+    assert describe_track(stored).track_name == 'a1900292bf3a'
+    assert describe_track(
+        stored, original_name='03 - Radiohead - Karma Police.mp3'
+    ).track_name == 'Karma Police'

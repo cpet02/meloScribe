@@ -123,6 +123,7 @@ python -m meloscribe.cli vocals.wav --vocals-only --format csv -o notes.csv
 | `--confidence 0.6` | Drop notes below a confidence |
 | `--lyrics-mode` | `off` / `lookup` / `align` / `transcribe` |
 | `--vocals-only` | Input is already an isolated vocal |
+| `--voters`, `--force` | Under **Advanced** in the web UI |
 | `--show-voters` | Show the per-voter breakdown per note (the web UI has a checkbox for this under the results table) |
 
 ---

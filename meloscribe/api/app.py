@@ -154,7 +154,10 @@ async def upload(file: UploadFile = File(...)) -> Dict[str, Any]:
         except Exception:
             pass
 
-    guess = describe_track(destination, duration=duration)
+    # Tags come from the stored file, but the *name* fallback must use what
+    # the user uploaded - the stored file is named by a generated id.
+    guess = describe_track(destination, duration=duration,
+                           original_name=file.filename)
 
     return {
         'upload_id': upload_id,
