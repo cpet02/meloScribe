@@ -100,10 +100,18 @@ class EngineSettings:
     voters: Sequence[str] = AUTO
     fusion: FusionSettings = field(default_factory=FusionSettings)
     min_note_duration: float = 0.06
-    # A same-pitch split also requires the amplitude envelope to rise by this
-    # much (normalised). Vibrato peaks the onset detector without a real
-    # attack, so onset evidence alone is not sufficient to split a note.
-    attack_threshold: float = 0.12
+    # A same-pitch split also requires the level to have climbed this far out
+    # of its recent trough, as a fraction of the current level. Vibrato peaks
+    # the onset detector without a real attack, so onset evidence alone is not
+    # sufficient to split a note.
+    #
+    # Swept 0.12-0.55 against the note-F1 of every case that can express
+    # over- or under-splitting. 0.45 is the middle of a plateau where all of
+    # them score 1.000: below it soft-attack material shreds (0.80 at 0.12),
+    # above it genuine re-articulations start being missed (0.92 at 0.55).
+    # The old 0.12 was tuned against the previous, scale-dependent envelope
+    # and does not mean the same thing here.
+    attack_threshold: float = 0.45
     # HPSS denoising is off by default: it measured neutral-to-harmful on the
     # synthetic set. That set has no percussive bleed though - which is the
     # only thing HPSS removes - so this must be re-tested on real stems
@@ -207,27 +215,47 @@ class PitchEngine:
             return (is_peak & prominent & (onsets >= 0.5))
         return None
 
-    @staticmethod
-    def _attack_envelope(audio: Audio, n_frames: int) -> np.ndarray:
-        """Per-frame amplitude attack strength, normalised to [0, 1].
+    # How far back to look for the trough an attack rises out of. 80ms is long
+    # enough to contain a real re-articulation's dip and short enough not to
+    # reach back into the previous note.
+    ATTACK_WINDOW_S = 0.08
+
+    @classmethod
+    def _attack_envelope(cls, audio: Audio, n_frames: int) -> np.ndarray:
+        """Per-frame attack strength: how far the level has climbed out of its
+        recent trough, as a fraction of the current level.
 
         This is what separates a re-articulated note from vibrato. Both produce
-        peaks in the onset activation, but only a real attack raises the
-        amplitude envelope - vibrato modulates frequency at roughly constant
-        loudness. Requiring a rise in loudness at the split point is therefore
-        the discriminator; without it, a 5Hz vibrato was splitting held notes
-        into 200ms fragments at exactly the vibrato period.
+        peaks in the onset activation, but only a real attack is preceded by a
+        dip in loudness - vibrato modulates frequency at roughly constant
+        level. Without this gate a 5Hz vibrato split held notes into 200ms
+        fragments at exactly the vibrato period.
+
+        The measure is *relative* on purpose. The first version divided the
+        frame-to-frame rise by the 99th percentile of rises across the whole
+        track, which silently assumed the track contains some hard attacks to
+        set the scale by. On softly-sung material there are none, the scale
+        collapses to the size of the vibrato ripple, and the ripple clears the
+        threshold: measured note precision 0.57 on a soft-attack phrase, with a
+        one-second closing note shredded into five pieces. Dividing by the
+        local level instead makes the number scale-free, so the same threshold
+        means the same thing whether the singer punches or breathes.
         """
         from .grid import HOP as GRID_HOP
         from .grid import resample_series
 
         times, rms = audio_mod.rms_envelope(audio, hop=GRID_HOP)
-        rise = np.diff(rms, prepend=rms[:1])
-        np.maximum(rise, 0.0, out=rise)
+        if rms.size == 0:
+            return np.zeros(n_frames, dtype=np.float32)
 
-        peak = float(np.percentile(rise, 99)) if rise.size else 0.0
-        if peak > 0:
-            rise = np.clip(rise / peak, 0.0, 1.0)
+        span = max(1, int(round(cls.ATTACK_WINDOW_S / GRID_HOP)))
+        # Trough of the preceding window, inclusive of the current frame.
+        padded = np.pad(rms, (span, 0), mode='edge')
+        windows = np.lib.stride_tricks.sliding_window_view(padded, span + 1)
+        trough = windows.min(axis=1)[:rms.size]
+
+        rise = (rms - trough) / np.maximum(rms, 1e-6)
+        np.clip(rise, 0.0, 1.0, out=rise)
 
         return resample_series(rise, times, n_frames)
 

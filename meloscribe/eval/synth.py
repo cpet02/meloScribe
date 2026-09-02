@@ -43,6 +43,12 @@ class Voice:
     attack_s: float = 0.02
     release_s: float = 0.04
     even_harmonic_gain: float = 1.0
+    # A scoop into the note: the pitch starts this many cents flat and glides
+    # up to target over `scoop_ms`. Real singers do this constantly, and it is
+    # the specific thing that defeats an onset taken from where the *pitch*
+    # settled - the voice has been sounding for 80ms by then.
+    scoop_cents: float = 0.0
+    scoop_ms: float = 0.0
 
 
 PRESETS: Dict[str, Voice] = {
@@ -58,6 +64,16 @@ PRESETS: Dict[str, Voice] = {
     # Breathy and noisy: stresses voicing detection rather than pitch.
     'breathy': Voice(n_harmonics=8, harmonic_rolloff=0.5, vibrato_cents=40.0,
                      breath_noise=0.18),
+    # A soft attack. Every voice above starts in 20ms, which makes an onset
+    # trivial to place and is nothing like a sung entry.
+    'soft': Voice(n_harmonics=10, harmonic_rolloff=0.65, vibrato_cents=30.0,
+                  breath_noise=0.04, attack_s=0.11, release_s=0.09),
+    # Soft attack *and* a scoop up to pitch. This is the combination that
+    # exposes onset placement: the note is audible well before its pitch is
+    # correct, so anything that waits for the pitch reports it late.
+    'scooped': Voice(n_harmonics=10, harmonic_rolloff=0.65, vibrato_cents=30.0,
+                     breath_noise=0.04, attack_s=0.09, release_s=0.09,
+                     scoop_cents=140.0, scoop_ms=90.0),
 }
 
 
@@ -99,6 +115,14 @@ def render_note(midi: float, duration: float, voice: Voice,
     # excursion stays exactly +/- vibrato_cents.
     depth = voice.vibrato_cents / 1200.0
     vib = depth * np.sin(2 * np.pi * voice.vibrato_hz * t)
+
+    # The scoop is a separate, one-way glide added to the vibrato: starting
+    # flat and rising to target, decaying exponentially so it is over by
+    # roughly `scoop_ms` rather than ending in a corner.
+    if voice.scoop_cents > 0 and voice.scoop_ms > 0:
+        tau = voice.scoop_ms / 3000.0
+        vib = vib - (voice.scoop_cents / 1200.0) * np.exp(-t / tau)
+
     base_hz = float(midi_to_hz(midi))
     f0 = base_hz * (2.0 ** vib)
     phase = 2 * np.pi * np.cumsum(f0) / sr
@@ -403,6 +427,13 @@ CASES: List[Dict] = [
     # is earning its place.
     {'name': 'repeats_vocal',     'melody': 'repeats',   'voice': 'vocal',   'backing': 0.0},
     {'name': 'legato_clean',      'melody': 'legato',    'voice': 'clean',   'backing': 0.0},
+    # Onset placement. Every case above starts its notes in 20ms at the right
+    # pitch, so onsets are trivially placeable and note F1 at a 25ms tolerance
+    # was identical to F1 at 50ms - the benchmark could not express the
+    # question at all. These two can.
+    {'name': 'phrase_soft',       'melody': 'phrase',    'voice': 'soft',    'backing': 0.0},
+    {'name': 'phrase_scooped',    'melody': 'phrase',    'voice': 'scooped', 'backing': 0.0},
+    {'name': 'scale_scooped',     'melody': 'scale',     'voice': 'scooped', 'backing': 0.0},
 ]
 
 

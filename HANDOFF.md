@@ -65,7 +65,11 @@ venv/Scripts/meloscribe song.mp3 --track "Name" --artist "Artist"
 | System | OA | RPA | VoicingFA | Octave | Note F1 |
 |---|---|---|---|---|---|
 | basic-pitch (old pipeline) | 0.877 | 0.955 | 0.368 | 0.001 | 0.471 |
-| ensemble (`crepe + basic_pitch`) | **0.973** | **0.998** | **0.107** | **0.000** | **0.919** |
+| ensemble, before onset work | 0.973 | 0.998 | 0.107 | 0.000 | 0.919 |
+| ensemble (`crepe + basic_pitch`) | **0.970** | **0.997** | **0.116** | **0.000** | **1.000** |
+
+The benchmark is now 13 cases, not 10 - the three added ones are harder, which
+is why OA moves a hair while note F1 goes to 1.000 on every case.
 
 Rhythmic plausibility (7 metrical cases, chance-normalised so 0 = random):
 
@@ -131,8 +135,61 @@ beat tracking adds ~4s and is cached.
 - Beat/tempo tracking exists only in the **legacy** `pipeline/beat_tracker.py`
   and was not carried into `meloscribe/`.
 - The web UI does not expose `--device`.
+- The web UI has a **Simple / Advanced** toggle (remembered in localStorage).
+  Advanced controls stay in the DOM when hidden, so simple mode submits the
+  identical request with the defaults left alone - there is one pipeline and
+  one request shape, not two code paths. If you add an option, add it to the
+  advanced markup with a sane default and simple mode inherits it for free.
 
 ---
+
+## Onset placement: fixed, and how it was found
+
+Note F1 is **1.000 on all 13 cases**, up from 0.919. The defect was not where
+the rhythm score pointed and not what it looked like from the outside.
+
+The chain, because the order is the lesson:
+
+1. The rhythm diagnostic said our real-track onsets were far worse than a plain
+   onset detector's on the same stem.
+2. The synthetic benchmark disagreed: note F1 at a *25ms* tolerance was
+   identical to F1 at 50ms, and onset bias was -2ms. Every synthetic note
+   started in 20ms at the right pitch, so onset placement was trivial and the
+   benchmark could not express the question.
+3. Adding `soft` and `scooped` voices - slow attacks, and a 140-cent scoop up
+   to pitch over 90ms, which is what singers actually do - dropped note F1 to
+   0.727.
+4. But recall stayed at **1.000** and onset MAE at **4-7ms**. Nothing was
+   misplaced or missed. Precision was 0.571: the notes were *spurious*. A
+   one-second closing note was coming out as five, spaced 0.2s apart - 5Hz,
+   the vibrato rate.
+
+So the real defect was over-segmentation, and the cause was that
+`_attack_envelope` normalised the amplitude rise by the 99th percentile of
+rises across the track. That silently assumes the track contains a hard attack
+somewhere to set the scale by. On softly-sung material there is none, the scale
+collapses to the size of the vibrato ripple, and the ripple clears the gate.
+Reproduced directly: under the old envelope one held soft note segmented into
+**ten** fragments.
+
+The fix is to measure the attack as how far the level has climbed out of its
+recent trough *as a fraction of the current level* - scale-free, so the same
+threshold means the same thing whether the singer punches or breathes.
+`attack_threshold` moves 0.12 -> 0.45, swept: every case scores 1.000 across
+0.35-0.45, soft material shreds below it (0.80 at 0.12) and genuine
+re-articulations start being missed above it (0.92 at 0.55). The old 0.12 was
+tuned against the old envelope and does not mean the same thing now.
+
+Independent confirmation on the real track, which shares no code path with the
+synthetic set: rhythm onset score **0.087 -> 0.154**, flagged windows 100% ->
+67%, and 9 fewer notes. Still short of the 0.42 baseline, so there is more
+here - but the direction is now measurable from two independent angles.
+
+`tests/test_segmentation.py` guards both edges. Note the tempting test that
+does *not* work: checking that a quieter copy of the same audio segments
+identically. The old percentile normalisation was already gain-invariant; what
+it lacked was invariance to attack *shape*. Parametrising over timbres is what
+catches it.
 
 ## Rhythm work: done, and what it found
 
@@ -235,10 +292,10 @@ but nothing refines *where*.
   merging every second note scored 0.67 against 0.92 correct. A reference-free
   measure cannot miss what was never emitted.
 - **It is not fed back into the decoder.** Step 4 of the original plan (a weak
-  log-prior on note boundaries near subdivisions) is not done, deliberately -
-  it should not be attempted until the onset-placement finding above is
-  understood, since biasing onsets toward the grid would paper over exactly the
-  defect this just uncovered.
+  log-prior on note boundaries near subdivisions) is still not done, and should
+  stay undone: the real track sits at 0.154 against a 0.42 baseline, so there
+  is a genuine defect left to find, and biasing onsets toward the grid would
+  hide it rather than fix it. Find the remaining 0.27 first.
 - **The tempo trap did not spring.** `metrical_halftime` renders a 132 BPM
   melody over a 66 BPM backbeat and librosa still found 132, so the octave
   diagnostics are exercised only against synthetically halved and doubled

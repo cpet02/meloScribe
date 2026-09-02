@@ -34,6 +34,9 @@ from .groundtruth import (DEFAULT_HOP, GroundTruth, Prediction, f0_to_notes,
 PITCH_TOLERANCE_CENTS = 50.0
 # Standard note-transcription tolerances.
 ONSET_TOLERANCE_S = 0.05
+# A second, stricter tolerance used only for the placement diagnostic. At 50ms
+# a note can be a full sixteenth adrift at 120bpm and still score as correct.
+TIGHT_ONSET_TOLERANCE_S = 0.025
 NOTE_PITCH_TOLERANCE_CENTS = 50.0
 
 
@@ -129,8 +132,53 @@ def _note_scores(ref: GroundTruth, est: Prediction) -> Dict[str, float]:
         offset_ratio=None,
     )
 
-    return {'precision': float(p), 'recall': float(r), 'f1': float(f1),
-            'n_ref': float(len(ref_notes)), 'n_est': float(len(est_notes))}
+    out = {'precision': float(p), 'recall': float(r), 'f1': float(f1),
+           'n_ref': float(len(ref_notes)), 'n_est': float(len(est_notes))}
+    out.update(_onset_placement(ref_iv, ref_hz, est_iv, est_hz))
+    return out
+
+
+def _onset_placement(ref_iv, ref_hz, est_iv, est_hz) -> Dict[str, float]:
+    """How well-placed the onsets are, not merely whether they were found.
+
+    The headline note F1 uses mir_eval's 50ms onset tolerance, which is the
+    right call for "did we find this note" and useless for "did we put it in
+    the right place" - a note 45ms adrift scores identically to one that is
+    exact. Three extra numbers separate those questions:
+
+    `f1_tight`   the same F1 at a 25ms tolerance, where placement starts to
+                 count.
+    `onset_bias` mean *signed* error over matched notes. Systematically late
+                 or early is a fixable defect; symmetric scatter is not the
+                 same problem and should not be averaged in with it.
+    `onset_mae`  mean absolute error, the scatter itself.
+    """
+    import mir_eval
+
+    empty = {'f1_tight': 0.0, 'onset_bias': 0.0, 'onset_mae': 0.0}
+    _, _, f1_tight, _ = mir_eval.transcription.precision_recall_f1_overlap(
+        ref_iv, ref_hz, est_iv, est_hz,
+        onset_tolerance=TIGHT_ONSET_TOLERANCE_S,
+        pitch_tolerance=NOTE_PITCH_TOLERANCE_CENTS,
+        offset_ratio=None,
+    )
+    empty['f1_tight'] = float(f1_tight)
+
+    # Matched at the *loose* tolerance deliberately: measuring placement only
+    # over notes that were already well placed would define the error away.
+    matches = mir_eval.transcription.match_notes(
+        ref_iv, ref_hz, est_iv, est_hz,
+        onset_tolerance=ONSET_TOLERANCE_S,
+        pitch_tolerance=NOTE_PITCH_TOLERANCE_CENTS,
+        offset_ratio=None,
+    )
+    if not matches:
+        return empty
+
+    errors = np.array([est_iv[e, 0] - ref_iv[r, 0] for r, e in matches])
+    empty['onset_bias'] = float(np.mean(errors))
+    empty['onset_mae'] = float(np.mean(np.abs(errors)))
+    return empty
 
 
 def score(ref: GroundTruth, est: Prediction,
@@ -178,20 +226,27 @@ def format_table(results: List[ScoreResult],
              'Raw Chroma Accuracy': 'RCA', 'Voicing Recall': 'VR',
              'Voicing False Alarm': 'VFA', 'octave_error_rate': 'OCT'}
 
-    headers = ['track'] + [short.get(c, c) for c in columns] + ['noteF1', 'sec']
+    headers = (['track'] + [short.get(c, c) for c in columns]
+               + ['noteF1', 'F1@25', 'bias', 'sec'])
     rows: List[List[str]] = []
     for r in results:
         rows.append(
             [r.track[:28]]
             + [f"{r.frame.get(c, 0.0):.3f}" for c in columns]
-            + [f"{r.note.get('f1', 0.0):.3f}", f"{r.runtime_s:.1f}"]
+            + [f"{r.note.get('f1', 0.0):.3f}",
+               f"{r.note.get('f1_tight', 0.0):.3f}",
+               f"{r.note.get('onset_bias', 0.0) * 1000:+.0f}",
+               f"{r.runtime_s:.1f}"]
         )
 
     agg = aggregate(results)
     rows.append(
         ['MEAN']
         + [f"{agg.get(c, 0.0):.3f}" for c in columns]
-        + [f"{agg.get('note_f1', 0.0):.3f}", f"{agg.get('runtime_s', 0.0):.1f}"]
+        + [f"{agg.get('note_f1', 0.0):.3f}",
+           f"{agg.get('note_f1_tight', 0.0):.3f}",
+           f"{agg.get('note_onset_bias', 0.0) * 1000:+.0f}",
+           f"{agg.get('runtime_s', 0.0):.1f}"]
     )
 
     widths = [max(len(headers[i]), max(len(row[i]) for row in rows))
