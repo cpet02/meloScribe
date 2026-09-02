@@ -54,8 +54,15 @@ class FusionSettings:
     # Cost of starting or stopping singing. Discourages the one-frame
     # dropouts that fragment a held note into three.
     voicing_switch_penalty: float = 2.0
-    # Raises or lowers the bar for calling a frame voiced at all. Positive
-    # values make the decoder more willing to say "silence".
+    # Raises or lowers the bar for calling a frame voiced at all. It is
+    # subtracted from the unvoiced state's log-odds, so **positive values make
+    # the decoder more willing to say "singing"**, not less. (The comment here
+    # previously claimed the opposite; measured, +1.0 takes vocal coverage on a
+    # real track from 42% to 91% while -1.0 takes it to 14%.)
+    #
+    # Left at 0.0. Raising it does increase coverage, but the frames it wins
+    # are not melody: at +1.0 the synthetic voicing false-alarm rate goes 0.116
+    # -> 0.344 and the real track's rhythmic onset score falls 0.156 -> 0.040.
     silence_bias: float = 0.0
     # Floor applied to every voter's salience before the log. Without it a
     # voter that reports ~0 for a pitch contributes log(1e-8) ~ -18, which no

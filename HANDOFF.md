@@ -182,14 +182,69 @@ tuned against the old envelope and does not mean the same thing now.
 
 Independent confirmation on the real track, which shares no code path with the
 synthetic set: rhythm onset score **0.087 -> 0.154**, flagged windows 100% ->
-67%, and 9 fewer notes. Still short of the 0.42 baseline, so there is more
-here - but the direction is now measurable from two independent angles.
+67%, and 9 fewer notes.
+
+That fix is real and stands. The remaining gap to the real-audio baseline turned
+out to be something else entirely - see the next section, which also corrects
+two claims made here earlier.
 
 `tests/test_segmentation.py` guards both edges. Note the tempting test that
 does *not* work: checking that a quieter copy of the same audio segments
 identically. The old percentile normalisation was already gain-invariant; what
 it lacked was invariance to attack *shape*. Parametrising over timbres is what
 catches it.
+
+## The rest of the gap: it is voicing coverage, not onset placement
+
+Chased to a conclusion. Two things I previously wrote are wrong, and the record
+is corrected here rather than quietly edited above.
+
+**The remaining defect: we transcribe 42% of the singing.** The decoder marks
+18% of the track voiced while the vocal stem is loud for 40%. What comes out is
+152 short fragments (median 0.25s) covering under half the sung material, and
+their start times agree with real vocal articulations **at chance**: 38.8% land
+within 80ms of one, against 37.0% +/- 3.8% for random times drawn from the same
+loud-vocal regions. Onset *placement inside what we do detect* is fine - 4-7ms
+MAE on synthetic, +21ms median on real near-matches. So "onset placement" was
+the wrong name for this. It is a recall problem wearing a timing problem's
+clothes, and the rhythm score could not tell the difference because a fragment
+that starts in the middle of a phrase is off-grid exactly like a mistimed note.
+
+**Correction 1: the 0.42 baseline is not inflated by drum bleed.** I suspected
+it was, since drums are on-grid by construction and separation is not surgical.
+It is not: excluding vocal-stem onsets that coincide with a hit in *any* other
+stem leaves 187 onsets that score **0.682**, higher than the ones that do
+coincide (0.249). The cleanest vocal onsets are the most grid-aligned. The
+singer is genuinely, strongly on the beat and the gap is entirely ours.
+
+**Correction 2: it is not portamento or rounding flips at legato boundaries.**
+That was my hypothesis and the data refuses it. Whether a boundary lands on an
+articulation is flat across pitch-step size (1 semitone 41%, 2 semitones 50%,
+3+ 45%) and flat between legato and after-rest boundaries (46% vs 41%) - all of
+which is just the chance rate. There is no time-base error either: no
+consistent lag (best lags per quarter scatter -0.99, -0.04, -0.47, -0.24s) and
+the reported duration matches the file exactly.
+
+**It is not reachable with the knobs that exist.** Both were swept in both
+directions, against synthetic false-alarm rate and real coverage together:
+
+| `silence_bias` | synth VFA | note F1 | real coverage | real onset score |
+|---|---|---|---|---|
+| -1.0 | 0.037 | 1.000 | 14% | 0.142 |
+| **0.0** | **0.116** | **1.000** | **42%** | **0.156** |
+| +0.5 | 0.255 | 0.982 | 68% | 0.124 |
+| +1.0 | 0.344 | 0.969 | 91% | 0.040 |
+
+Coverage buys nothing: the frames it wins are not melody. `voicing_switch_penalty`
+is worse than useless here - raising it cuts coverage too (42% -> 20% at 8.0),
+because it suppresses phrase *entries* as well as exits.
+
+So the next work is upstream, in what the voters report as voicing confidence
+on a real separated vocal - reverberant, quiet, artefacted - not in the decoder
+that consumes it. Worth measuring per-voter voicing against the loud-vocal mask
+before touching anything. And note the whole diagnosis rests on one track, with
+an energy gate standing in for an annotation; real annotated audio would settle
+it properly and remains the most valuable thing missing from this repo.
 
 ## Rhythm work: done, and what it found
 
