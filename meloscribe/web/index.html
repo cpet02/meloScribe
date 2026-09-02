@@ -99,20 +99,41 @@
   .voter-scores { font-family: ui-monospace, Consolas, monospace; font-size: 11px; white-space: nowrap; }
   .voter-scores .weak { color: var(--err); }
   code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
+
+  /* Simple vs advanced. Advanced-only controls are hidden rather than
+     removed, so the values they hold are still the ones submitted - simple
+     mode is the same pipeline with the defaults left alone, not a different
+     one. */
+  body:not(.mode-adv) .adv-only { display: none !important; }
+  body.mode-adv .simple-only { display: none !important; }
+  .modes { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+  .modes button {
+    background: transparent; color: var(--fg); border: 0; border-radius: 0;
+    padding: 5px 13px; font-size: 12px; font-weight: 500; cursor: pointer;
+  }
+  .modes button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  #runBtn { font-size: 15px; padding: 11px 22px; }
 </style>
 </head>
 <body>
 <main>
   <header>
     <h1>meloScribe</h1>
-    <span class="meta" id="health">checking…</span>
+    <div class="row" style="gap:12px">
+      <div class="modes" role="group" aria-label="Detail level">
+        <button type="button" id="modeSimple" aria-pressed="true">Simple</button>
+        <button type="button" id="modeAdv" aria-pressed="false">Advanced</button>
+      </div>
+      <span class="meta" id="health">checking…</span>
+    </div>
   </header>
-  <p class="tagline">Vocal melody transcription with multi-voter pitch estimation.</p>
+  <p class="tagline simple-only">Turn a song into the notes of its sung melody.</p>
+  <p class="tagline adv-only">Vocal melody transcription with multi-voter pitch estimation.</p>
 
   <section class="panel">
-    <h2>1 · Audio</h2>
+    <h2><span class="simple-only">1 · Your song</span><span class="adv-only">1 · Audio</span></h2>
     <div id="drop">
-      <strong>Drop an audio file here</strong><br>
+      <strong><span class="simple-only">Drop a song here</span><span class="adv-only">Drop an audio file here</span></strong><br>
       <span class="meta">or click to browse — mp3, wav, flac, m4a, ogg</span>
     </div>
     <input type="file" id="file" class="hidden" accept=".mp3,.wav,.flac,.m4a,.ogg,.opus,.aac">
@@ -123,7 +144,7 @@
   </section>
 
   <section class="panel" id="detailsPanel">
-    <h2>2 · Track details</h2>
+    <h2><span class="simple-only">2 · What is it called?</span><span class="adv-only">2 · Track details</span></h2>
     <div class="grid">
       <div>
         <label for="track">Track name <span style="color:var(--accent)">*</span></label>
@@ -134,16 +155,24 @@
         <input id="artist" placeholder="Radiohead" style="width:100%">
       </div>
       <div>
-        <label for="lyricsMode">Lyrics</label>
+        <label for="lyricsMode"><span class="simple-only">Lyrics</span><span class="adv-only">Lyrics mode</span></label>
         <select id="lyricsMode" style="width:100%">
-          <option value="align" selected>Fetch + align to words</option>
-          <option value="lookup">Fetch only (LRC timings)</option>
-          <option value="transcribe">Fetch, else transcribe audio</option>
-          <option value="off">Disabled</option>
+          <option value="align" selected
+                  data-simple="Find them and match to the notes"
+                  data-adv="Fetch + align to words">Find them and match to the notes</option>
+          <option value="lookup"
+                  data-simple="Just find them"
+                  data-adv="Fetch only (LRC timings)">Just find them</option>
+          <option value="transcribe"
+                  data-simple="Find them, or listen and guess"
+                  data-adv="Fetch, else transcribe audio">Find them, or listen and guess</option>
+          <option value="off"
+                  data-simple="Skip lyrics"
+                  data-adv="Disabled">Skip lyrics</option>
         </select>
       </div>
     </div>
-    <div class="row" style="margin-top:12px">
+    <div class="row adv-only" style="margin-top:12px">
       <button class="secondary" id="searchBtn">Search LRClib</button>
       <span class="meta" id="searchMeta"></span>
     </div>
@@ -154,8 +183,12 @@
   </section>
 
   <section class="panel">
-    <h2>3 · Options</h2>
-    <div class="grid">
+    <h2><span class="simple-only">3 · Go</span><span class="adv-only">3 · Options</span></h2>
+    <p class="meta simple-only" style="margin:0 0 14px">
+      Everything else is set to sensible defaults. Switch to Advanced if you
+      want to change the separation model, transpose, or pick pitch estimators.
+    </p>
+    <div class="grid adv-only">
       <div>
         <label for="preset">Separation quality</label>
         <select id="preset" style="width:100%">
@@ -184,8 +217,8 @@
         </select>
       </div>
     </div>
-    <details style="margin-top:16px">
-      <summary class="meta" style="cursor:pointer">Advanced</summary>
+    <details class="adv-only" style="margin-top:16px">
+      <summary class="meta" style="cursor:pointer">Diagnostics</summary>
       <div style="margin-top:14px">
         <label class="meta" style="display:flex;align-items:center;gap:7px;margin-bottom:10px">
           <input type="checkbox" id="assessRhythm" style="width:auto;margin:0">
@@ -210,8 +243,10 @@
     </details>
 
     <div class="row" style="margin-top:16px">
-      <button id="runBtn" disabled>Transcribe</button>
-      <button class="secondary hidden" id="cancelBtn">Cancel</button>
+      <button id="runBtn" disabled
+              data-simple="Get the melody" data-adv="Transcribe">Get the melody</button>
+      <button class="secondary hidden" id="cancelBtn"
+              data-simple="Stop" data-adv="Cancel">Stop</button>
     </div>
   </section>
 
@@ -233,14 +268,19 @@
     </div>
     <canvas id="roll"></canvas>
     <div class="row" style="margin:14px 0">
-      <button class="secondary" data-dl="csv">CSV</button>
-      <button class="secondary" data-dl="json">JSON</button>
-      <button class="secondary" data-dl="leadsheet">Lead sheet</button>
-      <button class="secondary" data-dl="lrc">LRC</button>
-      <button class="secondary" data-dl="midi">MIDI</button>
+      <button class="secondary" data-dl="csv"
+              data-simple="Spreadsheet" data-adv="CSV">Spreadsheet</button>
+      <button class="secondary" data-dl="leadsheet"
+              data-simple="Sheet to read" data-adv="Lead sheet">Sheet to read</button>
+      <button class="secondary" data-dl="midi"
+              data-simple="MIDI for a DAW" data-adv="MIDI">MIDI for a DAW</button>
+      <button class="secondary" data-dl="lrc"
+              data-simple="Timed lyrics" data-adv="LRC">Timed lyrics</button>
+      <button class="secondary adv-only" data-dl="json"
+              data-simple="Raw data" data-adv="JSON">JSON</button>
     </div>
     <div id="warnings"></div>
-    <label class="meta" style="display:flex;align-items:center;gap:7px;margin:4px 0 10px">
+    <label class="meta adv-only" style="display:flex;align-items:center;gap:7px;margin:4px 0 10px">
       <input type="checkbox" id="showVoters" style="width:auto;margin:0">
       Show per-voter breakdown — what each estimator scored for the chosen note
     </label>
@@ -261,6 +301,30 @@
 
 <script>
 const $ = id => document.getElementById(id);
+
+// --- simple / advanced ----------------------------------------------------
+// Advanced controls stay in the DOM when hidden, so simple mode submits the
+// very same defaults rather than a separate code path - there is one pipeline
+// and one request shape, and the toggle only decides how much of it is on
+// screen. The choice is remembered because it is a property of the person,
+// not of the song.
+function setMode(mode) {
+  const advanced = mode === 'adv';
+  document.body.classList.toggle('mode-adv', advanced);
+  $('modeSimple').setAttribute('aria-pressed', String(!advanced));
+  $('modeAdv').setAttribute('aria-pressed', String(advanced));
+  document.querySelectorAll('[data-simple][data-adv]').forEach(el => {
+    el.textContent = advanced ? el.dataset.adv : el.dataset.simple;
+  });
+  try { localStorage.setItem('meloscribe.mode', mode); } catch (e) {}
+}
+
+$('modeSimple').onclick = () => setMode('simple');
+$('modeAdv').onclick = () => setMode('adv');
+
+let savedMode = 'simple';
+try { savedMode = localStorage.getItem('meloscribe.mode') || 'simple'; } catch (e) {}
+setMode(savedMode);
 let upload = null, jobId = null, poller = null, notes = [];
 
 /* ---------- health ---------- */
