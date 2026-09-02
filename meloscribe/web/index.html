@@ -80,6 +80,20 @@
     margin-bottom: 6px; cursor: pointer; font-size: 13px;
   }
   .result-item:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .beat-col { display: none; }
+  body.show-rhythm .beat-col { display: table-cell; }
+  /* Deviation is shown as a signed number and tinted only once it is large
+     enough to matter, so a page of tiny deviations does not read as a page of
+     problems. */
+  .beat-dev { font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+  .beat-dev.off { color: var(--err); }
+  .rhythm-bar {
+    display: flex; align-items: center; gap: 10px; font-size: 13px;
+    padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px;
+    margin: 4px 0 10px;
+  }
+  .rhythm-bar.flagged { border-color: var(--err); color: var(--err); }
+  .rhythm-bar .score { font-weight: 600; font-variant-numeric: tabular-nums; }
   .voters-col { display: none; }
   body.show-voters .voters-col { display: table-cell; }
   .voter-scores { font-family: ui-monospace, Consolas, monospace; font-size: 11px; white-space: nowrap; }
@@ -173,6 +187,11 @@
     <details style="margin-top:16px">
       <summary class="meta" style="cursor:pointer">Advanced</summary>
       <div style="margin-top:14px">
+        <label class="meta" style="display:flex;align-items:center;gap:7px;margin-bottom:10px">
+          <input type="checkbox" id="assessRhythm" style="width:auto;margin:0">
+          Score rhythmic plausibility — a diagnostic, off by default; adds a
+          few seconds and its threshold rests on one real track
+        </label>
         <label>Pitch voters</label>
         <div class="row" id="voterBoxes" style="gap:16px"></div>
         <div class="meta" style="margin-top:6px" id="voterHint">
@@ -225,10 +244,14 @@
       <input type="checkbox" id="showVoters" style="width:auto;margin:0">
       Show per-voter breakdown — what each estimator scored for the chosen note
     </label>
+    <div id="rhythmBar"></div>
     <div class="scroll">
       <table>
         <thead><tr><th>#</th><th>Note</th><th>Start</th><th>Dur</th>
-          <th>Conf</th><th>Cents</th><th>Lyric</th>
+          <th>Conf</th><th>Cents</th>
+          <th class="beat-col" title="Beats from the nearest grid position; + is late">Beat</th>
+          <th class="beat-col" title="Length in beats">Len</th>
+          <th>Lyric</th>
           <th class="voters-col">Voters</th></tr></thead>
         <tbody id="noteRows"></tbody>
       </table>
@@ -392,6 +415,7 @@ $('runBtn').onclick = async () => {
     preset: $('preset').value,
     transpose: parseInt($('transpose').value, 10),
     confidence: parseFloat($('confidence').value) || 0,
+    assess_rhythm: $('assessRhythm').checked,
     vocals_only: $('vocalsOnly').value === 'true',
     force: $('force').checked,
     // null means "decide automatically", which is not the same as sending the
@@ -457,11 +481,51 @@ async function loadResult(job) {
       <td>${n.start_time.toFixed(2)}</td><td>${n.duration.toFixed(2)}</td>
       <td>${n.confidence.toFixed(2)}</td>
       <td>${n.cents_off > 0 ? '+' : ''}${n.cents_off.toFixed(0)}</td>
+      ${beatCells(n)}
       <td>${escapeHtml(n.lyric || '')}</td>
       <td class="voters-col voter-scores">${voterCell(n.voters)}</td>
     </tr>`).join('');
 
+  rhythmBar(data.rhythm);
   drawRoll();
+}
+
+// Empty cells, not zeros, when the rhythm stage did not run or did not trust
+// the tempo: "not assessed" and "exactly on the beat" must not look alike.
+function beatCells(n) {
+  if (n.beat_deviation === undefined || n.beat_deviation === null)
+    return '<td class="beat-col"></td><td class="beat-col"></td>';
+  const dev = n.beat_deviation;
+  const off = Math.abs(dev) > 0.125 ? ' off' : '';
+  return `<td class="beat-col beat-dev${off}">${dev > 0 ? '+' : ''}${dev.toFixed(2)}</td>`
+       + `<td class="beat-col beat-dev">${(n.duration_beats || 0).toFixed(2)}</td>`;
+}
+
+// The track-level score, phrased as a prompt to check rather than a verdict.
+// It is a correlate of transcription error, not a measurement of it: rubato
+// and free time score badly while being transcribed perfectly, so an
+// unreliable tempo shows the reason instead of a number.
+function rhythmBar(rhythm) {
+  const bar = $('rhythmBar');
+  document.body.classList.toggle('show-rhythm', !!(rhythm && rhythm.reliable));
+  if (!rhythm) { bar.innerHTML = ''; return; }
+
+  if (!rhythm.reliable) {
+    const why = (rhythm.warnings || [])[0] || 'no reliable tempo was found';
+    bar.innerHTML = `<div class="rhythm-bar"><span>Rhythm not assessed</span>
+      <span class="meta">${escapeHtml(why)}</span></div>`;
+    return;
+  }
+
+  const pct = Math.round(rhythm.on_grid_fraction * 100);
+  bar.innerHTML = `<div class="rhythm-bar${rhythm.flagged ? ' flagged' : ''}">
+    <span class="score">${rhythm.plausibility.toFixed(2)}</span>
+    <span>rhythmic plausibility at ${rhythm.grid.bpm.toFixed(0)} BPM
+      — ${pct}% of notes on the beat grid</span>
+    ${rhythm.flagged
+      ? '<span class="meta">Below what a plain onset detector managed on real audio — worth a listen.</span>'
+      : ''}
+  </div>`;
 }
 
 // Voters that disagree with the decoded note are the interesting ones, so a

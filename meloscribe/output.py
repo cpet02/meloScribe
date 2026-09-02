@@ -33,13 +33,34 @@ def _confidence_mark(confidence: float) -> str:
     return '??'
 
 
+def _rhythm_cells(note: TranscribedNote) -> List[str]:
+    """The 'beat' and 'len' cells: where the note sat against the beat grid.
+
+    Deviation is shown in beats rather than seconds so it stays comparable
+    across tempi, and signed so the reader can tell a note that anticipates the
+    beat from one that drags behind it - a systematic sign is itself
+    informative, and rounding it away to a distance would hide that.
+    """
+    if note.beat_deviation is None:
+        return ['', '']
+    return [f"{note.beat_deviation:+.2f}", f"{note.duration_beats or 0.0:.2f}"]
+
+
 def format_table(notes: Sequence[TranscribedNote],
                  show_voters: bool = False) -> str:
     """Fixed-width table, one row per note."""
     if not notes:
         return '(no notes detected)'
 
-    headers = ['#', 'note', 'start', 'end', 'dur', 'conf', '', 'cents', 'lyric']
+    # The rhythm columns appear only when the stage actually ran and found a
+    # grid it trusted. Printing an empty 'beat' column on every free-time
+    # recording would train the reader to ignore it.
+    show_rhythm = any(n.beat_deviation is not None for n in notes)
+
+    headers = ['#', 'note', 'start', 'end', 'dur', 'conf', '', 'cents']
+    if show_rhythm:
+        headers.extend(['beat', 'len'])
+    headers.append('lyric')
     if show_voters:
         headers.extend(sorted(notes[0].voter_scores))
 
@@ -48,7 +69,10 @@ def format_table(notes: Sequence[TranscribedNote],
         row = [str(i), note.name, f"{note.start:.2f}", f"{note.end:.2f}",
                f"{note.duration:.2f}", f"{note.confidence:.2f}",
                _confidence_mark(note.confidence),
-               f"{note.pitch_cents:+.0f}", (note.lyric or '')[:24]]
+               f"{note.pitch_cents:+.0f}"]
+        if show_rhythm:
+            row.extend(_rhythm_cells(note))
+        row.append((note.lyric or '')[:24])
         if show_voters:
             row.extend(f"{note.voter_scores.get(name, 0.0):.2f}"
                        for name in sorted(notes[0].voter_scores))
@@ -67,11 +91,16 @@ def format_csv(notes: Sequence[TranscribedNote]) -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator='\n')
     writer.writerow(['index', 'note', 'midi', 'start', 'end', 'duration',
-                     'confidence', 'cents_off', 'lyric'])
+                     'confidence', 'cents_off', 'beat_deviation',
+                     'duration_beats', 'lyric'])
     for i, note in enumerate(notes, 1):
         writer.writerow([i, note.name, note.midi, f"{note.start:.3f}",
                          f"{note.end:.3f}", f"{note.duration:.3f}",
                          f"{note.confidence:.4f}", f"{note.pitch_cents:.1f}",
+                         '' if note.beat_deviation is None
+                         else f"{note.beat_deviation:.3f}",
+                         '' if note.duration_beats is None
+                         else f"{note.duration_beats:.3f}",
                          note.lyric or ''])
     return buffer.getvalue()
 

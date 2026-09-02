@@ -73,6 +73,9 @@ examples:
     audio.add_argument('--voters', help='Comma-separated pitch voters to use')
     audio.add_argument('--force', action='store_true',
                        help='Ignore cached stems and re-separate')
+    audio.add_argument('--rhythm', action='store_true',
+                       help='Also track the beat and score how metrically '
+                            'plausible the transcription is (diagnostic)')
 
     out = parser.add_argument_group('output')
     out.add_argument('--format', '-f', choices=FORMATS, default='table')
@@ -105,6 +108,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         transpose=args.transpose,
         confidence_threshold=args.confidence,
         device=args.device,
+        assess_rhythm=args.rhythm,
         force=args.force,
         vocals_only=args.vocals_only,
     )
@@ -134,6 +138,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                   file=sys.stderr)
         if output.lyrics:
             print(f"lyrics: {output.lyrics.summary()}", file=sys.stderr)
+        if output.rhythm:
+            print(output.rhythm.summary(), file=sys.stderr)
         print(f"notes: {len(output.notes)}  "
               f"mean confidence: {output.mean_confidence:.2f}  "
               f"elapsed: {output.elapsed_s:.1f}s", file=sys.stderr)

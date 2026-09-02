@@ -61,6 +61,7 @@ class JobRequest(BaseModel):
     confidence: float = Field(0.0, ge=0.0, le=1.0)
     vocals_only: bool = False
     voters: Optional[List[str]] = None
+    assess_rhythm: bool = False
     force: bool = False
 
 
@@ -225,6 +226,7 @@ def create_job(request: JobRequest) -> Dict[str, Any]:
                 confidence_threshold=request.confidence,
                 vocals_only=request.vocals_only,
                 voters=request.voters,
+                assess_rhythm=request.assess_rhythm,
                 force=request.force,
             ),
             progress=report)
@@ -274,6 +276,7 @@ def job_notes(job_id: str) -> Dict[str, Any]:
         'key': result.key.name if result.key else None,
         'duration': result.duration,
         'lyrics': result.lyrics.summary() if result.lyrics else None,
+        'rhythm': result.rhythm.to_dict() if result.rhythm else None,
         'warnings': result.warnings,
     }
 

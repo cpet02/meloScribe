@@ -16,3 +16,4 @@ data/exports/
 # editable install
 *.egg-info/
 build/
+data/eval/

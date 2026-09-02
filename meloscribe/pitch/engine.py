@@ -41,6 +41,10 @@ class TranscribedNote:
     voter_scores: Dict[str, float] = field(default_factory=dict)
     lyric: Optional[str] = None
     syllable: Optional[str] = None
+    # Filled in by the rhythm stage when a trustworthy beat grid was found;
+    # None means "not assessed", which is not the same as "on the beat".
+    beat_deviation: Optional[float] = None   # beats from the nearest grid slot
+    duration_beats: Optional[float] = None
 
     @property
     def name(self) -> str:
@@ -56,7 +60,12 @@ class TranscribedNote:
         return note
 
     def to_dict(self) -> Dict:
+        rhythm = {}
+        if self.beat_deviation is not None:
+            rhythm = {'beat_deviation': round(self.beat_deviation, 3),
+                      'duration_beats': round(self.duration_beats or 0.0, 3)}
         return {
+            **rhythm,
             'note': self.name,
             'midi': self.midi,
             'start_time': round(self.start, 3),

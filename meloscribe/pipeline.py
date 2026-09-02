@@ -23,6 +23,7 @@ from .lyrics.lrclib import TrackQuery, describe_track
 from .lyrics.service import LyricsMode, LyricsOutcome, LyricsService
 from .pitch.engine import (EngineSettings, PitchEngine, TranscribedNote,
                            TranscriptionResult)
+from .rhythm import RhythmReport
 from .stems import Separator, SeparationSettings, StemResult, best_device
 
 ProgressFn = Callable[[float, str], None]
@@ -32,10 +33,11 @@ ProgressFn = Callable[[float, str], None]
 # 20% for most of the run.
 STAGE_WEIGHTS = {
     'metadata': 0.02,
-    'separate': 0.55,
+    'separate': 0.52,
     'key': 0.03,
-    'transcribe': 0.30,
+    'transcribe': 0.29,
     'lyrics': 0.08,
+    'rhythm': 0.04,
     'output': 0.02,
 }
 
@@ -53,6 +55,14 @@ class TranscriptionRequest:
     confidence_threshold: float = 0.0
     device: Optional[str] = None
     use_key_prior: bool = True
+    # Rhythmic plausibility is reported, never acted on: it flags a
+    # transcription for review and does not change a single note.
+    #
+    # Off by default. It is a diagnostic whose threshold rests on a single real
+    # track, and until that evidence is broader it should not add four seconds
+    # and two columns to every run that did not ask for it. Opt in with
+    # `--rhythm`, or `assess_rhythm=True`.
+    assess_rhythm: bool = False
     force: bool = False
     # Skip separation when the input is already an isolated vocal.
     vocals_only: bool = False
@@ -76,6 +86,7 @@ class TranscriptionOutput:
     lyrics: Optional[LyricsOutcome] = None
     stems: Optional[StemResult] = None
     transcription: Optional[TranscriptionResult] = None
+    rhythm: Optional['RhythmReport'] = None
     duration: float = 0.0
     elapsed_s: float = 0.0
     request: Optional[TranscriptionRequest] = None
@@ -93,6 +104,7 @@ class TranscriptionOutput:
             'key': self.key.name if self.key else None,
             'key_confidence': round(self.key.confidence, 3) if self.key else None,
             'lyrics': self.lyrics.summary() if self.lyrics else None,
+            'rhythm': self.rhythm.to_dict() if self.rhythm else None,
             'duration': round(self.duration, 2),
             'elapsed_s': round(self.elapsed_s, 2),
             'mean_confidence': round(self.mean_confidence, 3),
@@ -222,6 +234,23 @@ class Pipeline:
         attach_to_notes(notes, output.lyrics.lyrics if output.lyrics.found else None)
         tracker.finish_stage()
 
+        # --- rhythmic plausibility -----------------------------------------
+        # Deliberately last, and deliberately read-only. Nothing downstream
+        # consumes it: it annotates the notes and produces a flag, and the
+        # note list that comes out is byte-identical to the one that went in.
+        if request.assess_rhythm:
+            report = tracker.stage('rhythm')
+            report(0.2, 'tracking beats')
+            try:
+                output.rhythm = self._assess_rhythm(request, notes)
+            except Exception as exc:
+                output.warnings.append(f"Rhythm analysis failed: {exc}")
+            tracker.finish_stage()
+        else:
+            # Retire the stage's weight anyway, or the bar stops at 96%.
+            tracker.current = STAGE_WEIGHTS['rhythm']
+            tracker.finish_stage()
+
         # --- output --------------------------------------------------------
         report = tracker.stage('output')
         if request.transpose:
@@ -234,6 +263,32 @@ class Pipeline:
         if progress:
             progress(1.0, 'complete')
         return output
+
+
+    @staticmethod
+    def _assess_rhythm(request: TranscriptionRequest,
+                       notes: List[TranscribedNote]) -> RhythmReport:
+        """Score the notes against a beat grid tracked from the full mix.
+
+        The *mix*, not the vocal stem: beat tracking keys off percussive
+        onsets, which separation has deliberately removed. A grid tracked from
+        the vocals would be derived from the singer's own phrasing and would
+        then be used to judge that same phrasing, which measures nothing.
+        """
+        from . import rhythm as rhythm_mod
+
+        report = rhythm_mod.assess(notes, request.input_path,
+                                   force=request.force)
+        if request.vocals_only:
+            report.warnings.append(
+                'Beat tracking ran on an isolated vocal, which has no '
+                'percussion to lock onto; treat the rhythm score as weak.')
+
+        for note, detail in zip(notes, report.notes):
+            note.beat_deviation = detail.deviation_beats
+            note.duration_beats = detail.duration_beats
+
+        return report
 
 
 def transcribe_file(input_path, track_name: str = '', artist_name: str = '',

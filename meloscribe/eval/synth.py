@@ -15,6 +15,7 @@ Passing these is necessary, never sufficient. The real corpora still decide.
 
 from __future__ import annotations
 
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -58,6 +59,20 @@ PRESETS: Dict[str, Voice] = {
     'breathy': Voice(n_harmonics=8, harmonic_rolloff=0.5, vibrato_cents=40.0,
                      breath_noise=0.18),
 }
+
+
+def case_seed(name: str) -> int:
+    """A stable seed derived from a case name.
+
+    Not `hash()`: Python randomises string hashing per process, so a case's
+    seed changed on every run. That was invisible while the seed only affected
+    rendering - the WAV is written once and reused - but it silently
+    desynchronised any case whose *annotation* depends on the seed: the rubato
+    melody was re-timed on each run while the audio it was scored against
+    stayed as first rendered, and its score wandered by 0.18 with no code
+    change to explain it.
+    """
+    return zlib.crc32(name.encode('utf-8'))
 
 
 def _adsr(n: int, sr: int, attack_s: float, release_s: float) -> np.ndarray:
@@ -110,12 +125,19 @@ def render_note(midi: float, duration: float, voice: Voice,
 def render_melody(notes: Sequence[Note], voice: Voice,
                   sr: int = SAMPLE_RATE,
                   backing_level: float = 0.0,
-                  seed: int = 0) -> Tuple[np.ndarray, float]:
+                  seed: int = 0,
+                  pulse_bpm: float = 0.0,
+                  pulse_level: float = 0.0) -> Tuple[np.ndarray, float]:
     """Render a note list to audio, optionally over a chordal backing.
 
     `backing_level` simulates imperfect stem separation: a pad playing triads
     underneath the melody, at the given linear amplitude relative to the voice.
     That bleed is what makes real stems harder than clean synthesis.
+
+    `pulse_bpm`/`pulse_level` add a percussive pulse. Rhythm cases need it:
+    beat tracking keys off percussive onsets, and a bare sung line gives a beat
+    tracker nothing to lock onto, so a melody rendered without a pulse would
+    test the plausibility score against a grid that was never really found.
     """
     rng = np.random.default_rng(seed)
     duration = max(n.offset for n in notes) + 0.5
@@ -129,6 +151,9 @@ def render_melody(notes: Sequence[Note], voice: Voice,
 
     if backing_level > 0:
         audio += backing_level * _render_backing(notes, sr, len(audio), rng)
+
+    if pulse_level > 0 and pulse_bpm > 0:
+        audio += pulse_level * _render_pulse(pulse_bpm, sr, len(audio), rng)
 
     peak = np.max(np.abs(audio))
     if peak > 0:
@@ -157,6 +182,35 @@ def _render_backing(notes: Sequence[Note], sr: int, n_samples: int,
 
     peak = np.max(np.abs(pad))
     return pad / peak if peak > 0 else pad
+
+
+def _render_pulse(bpm: float, sr: int, n_samples: int,
+                  rng: np.random.Generator) -> np.ndarray:
+    """A dry percussive click on every beat, with a stronger downbeat.
+
+    Deliberately not a pure tone: a beat tracker responds to broadband
+    transients, and the downbeat accent gives it a phase to lock to rather than
+    just a period. Alternate beats are *not* dropped - that pattern is what
+    makes a tracker report half tempo, which the diagnostics exist to catch and
+    which the benchmark should therefore not build in by default.
+    """
+    pulse = np.zeros(n_samples)
+    period = 60.0 / bpm
+    click_n = int(0.03 * sr)
+    envelope = np.exp(-np.arange(click_n) / (0.006 * sr))
+    noise = rng.standard_normal(click_n) * envelope
+    body = np.sin(2 * np.pi * 180.0 * np.arange(click_n) / sr) * envelope
+
+    beat = 0
+    while beat * period * sr < n_samples:
+        start = int(beat * period * sr)
+        end = min(start + click_n, n_samples)
+        gain = 1.0 if beat % 4 == 0 else 0.6
+        pulse[start:end] += gain * (0.6 * noise + 0.4 * body)[:end - start]
+        beat += 1
+
+    peak = np.max(np.abs(pulse))
+    return pulse / peak if peak > 0 else pulse
 
 
 # Melodic material. Intervals are chosen to include the cases that break
@@ -208,6 +262,132 @@ def build_notes(melody: str, gap: Optional[float] = None,
     return notes
 
 
+# --------------------------------------------------------------------------
+# Metrical material, for the rhythm work
+# --------------------------------------------------------------------------
+#
+# Every melody above has arbitrary durations and no tempo whatsoever, so the
+# benchmark could not express the question "is this rhythm plausible?" at all -
+# it would have scored a correct transcription and a scrambled one identically.
+# These melodies are written in beats against a stated BPM instead, with a
+# percussive pulse rendered underneath so the beat tracker has something real
+# to find.
+#
+# Durations are in *beats*. Rests are written as a pitch of None, because a
+# metrical melody needs its rests to sit on the grid too - inserting an
+# arbitrary inter-note gap the way `build_notes` does would push every
+# subsequent onset off the beat and make correct material look implausible.
+
+_METRICAL: Dict[str, List[Tuple[Optional[int], float]]] = {
+    # Plain quarters and eighths: the floor case, should score near 1.
+    'straight': [(60, 1.0), (62, 1.0), (64, 0.5), (65, 0.5), (67, 1.0),
+                 (None, 1.0), (67, 0.5), (65, 0.5), (64, 1.0), (62, 1.0),
+                 (60, 2.0), (None, 1.0), (64, 0.5), (64, 0.5), (67, 1.0),
+                 (69, 2.0)],
+    # Syncopation and dotted values - correct music that a naive "is it on a
+    # quarter note" test would wrongly punish.
+    'syncopated': [(67, 0.75), (69, 0.25), (67, 0.5), (64, 0.5), (62, 1.0),
+                   (None, 0.5), (64, 0.75), (65, 0.25), (67, 1.5), (65, 0.5),
+                   (64, 1.0), (62, 0.5), (60, 1.5), (None, 0.5), (60, 1.0),
+                   (64, 1.0), (67, 2.0)],
+    # Triplets: the reason the ratio set is not just powers of two.
+    'triplets': [(60, 1 / 3), (62, 1 / 3), (64, 1 / 3), (65, 1.0),
+                 (67, 1 / 3), (65, 1 / 3), (64, 1 / 3), (62, 1.0),
+                 (64, 1 / 3), (65, 1 / 3), (67, 1 / 3), (69, 1.0),
+                 (67, 2.0), (None, 1.0), (60, 2.0)],
+    # Sixteenth-note runs against held notes: tests the short end of the
+    # duration range, where everything is close to something.
+    'busy': [(60, 0.25), (62, 0.25), (64, 0.25), (65, 0.25), (67, 1.0),
+             (69, 0.25), (67, 0.25), (65, 0.25), (64, 0.25), (62, 1.0),
+             (64, 0.25), (65, 0.25), (67, 0.25), (69, 0.25), (72, 2.0),
+             (None, 1.0), (67, 1.0), (64, 1.0)],
+}
+
+
+def build_metrical_notes(pattern: str, bpm: float = 100.0,
+                         start_beat: float = 0.0,
+                         swing: float = 0.0,
+                         rubato_beats: float = 0.0,
+                         legato: float = 0.92,
+                         seed: int = 0) -> List[Note]:
+    """Lay a metrical pattern out in seconds at a given tempo.
+
+    `swing` delays every off-beat eighth by that fraction of an eighth (0.33 is
+    roughly triplet swing). `rubato_beats` adds independent Gaussian timing
+    noise to each onset. Both exist to check that the plausibility score
+    tolerates real expressive timing rather than only tolerating a sequencer -
+    a metric that scores swung or rubato playing as implausible would fire on
+    exactly the music people care most about getting right.
+
+    `legato` shortens each note slightly so consecutive notes do not butt
+    together, matching how the non-metrical melodies are rendered.
+    """
+    if pattern not in _METRICAL:
+        raise ValueError(f"Unknown metrical pattern {pattern!r}. "
+                         f"Available: {sorted(_METRICAL)}")
+
+    rng = np.random.default_rng(seed)
+    period = 60.0 / bpm
+    notes: List[Note] = []
+    beat = start_beat
+
+    for midi, length in _METRICAL[pattern]:
+        if midi is not None:
+            position = beat
+            # Swing displaces the second eighth of each beat, and only that -
+            # applying it everywhere would just be a tempo change.
+            if swing and abs((beat % 1.0) - 0.5) < 1e-6:
+                position += swing * 0.5
+            if rubato_beats:
+                position += float(rng.normal(0.0, rubato_beats))
+            onset = position * period
+            notes.append(Note(onset=onset,
+                              offset=onset + length * period * legato,
+                              midi=float(midi)))
+        beat += length
+
+    # A leading count-in of silence would leave the first note at t=0, which
+    # both the pitch engine and the beat tracker find awkward.
+    shift = period * 2.0
+    return [Note(onset=n.onset + shift, offset=n.offset + shift, midi=n.midi)
+            for n in notes]
+
+
+# Rhythm cases. Each states its true BPM so the tempo estimate can be graded,
+# not merely used.
+METRICAL_CASES: List[Dict] = [
+    {'name': 'metrical_straight',  'pattern': 'straight',   'bpm': 100.0,
+     'voice': 'clean'},
+    {'name': 'metrical_syncopated', 'pattern': 'syncopated', 'bpm': 92.0,
+     'voice': 'vocal'},
+    {'name': 'metrical_triplets',  'pattern': 'triplets',   'bpm': 120.0,
+     'voice': 'vocal'},
+    {'name': 'metrical_busy',      'pattern': 'busy',       'bpm': 84.0,
+     'voice': 'clean'},
+    # Expressive timing: these must still score well, or the metric is
+    # measuring "sounds like a sequencer" rather than "sounds like music".
+    {'name': 'metrical_swing',     'pattern': 'straight',   'bpm': 110.0,
+     'voice': 'vocal', 'swing': 0.33},
+    {'name': 'metrical_rubato',    'pattern': 'syncopated', 'bpm': 96.0,
+     'voice': 'vocal', 'rubato': 0.035},
+    # A tempo trap: the melody is at 132 but the only percussion is a half-time
+    # backbeat at 66, which is exactly what makes a beat tracker report the
+    # wrong metrical level. Without a case like this the tempo diagnostics
+    # could only ever be confirmed, never caught out - every other case here
+    # has an unambiguous pulse, so a confidence measure that returned 1.0
+    # unconditionally would have looked perfect.
+    {'name': 'metrical_halftime',  'pattern': 'straight',   'bpm': 132.0,
+     'voice': 'vocal', 'pulse_bpm': 66.0},
+]
+
+
+def build_metrical_case(case: Dict) -> List[Note]:
+    return build_metrical_notes(case['pattern'], bpm=case['bpm'],
+                                swing=case.get('swing', 0.0),
+                                rubato_beats=case.get('rubato', 0.0),
+                                seed=case_seed(case['name']))
+
+
 # The benchmark set itself: melody x voice x bleed, chosen to cover each
 # failure mode once rather than to be exhaustive.
 CASES: List[Dict] = [
@@ -226,6 +406,25 @@ CASES: List[Dict] = [
 ]
 
 
+def case_notes(case: Dict) -> List[Note]:
+    """The ground-truth notes for a case, metrical or not."""
+    if 'pattern' in case:
+        return build_metrical_case(case)
+    return build_notes(case['melody'])
+
+
+def _case_meta(case: Dict) -> Dict:
+    meta = {'voice': case['voice'], 'synthetic': True,
+            'backing': case.get('backing', 0.0)}
+    if 'pattern' in case:
+        meta.update({'melody': case['pattern'], 'metrical': True,
+                     'bpm': case['bpm'], 'swing': case.get('swing', 0.0),
+                     'rubato': case.get('rubato', 0.0)})
+    else:
+        meta['melody'] = case['melody']
+    return meta
+
+
 def build_case(case: Dict, out_dir: Path,
                sr: int = SAMPLE_RATE) -> GroundTruth:
     """Render one case to a WAV file and return its exact ground truth."""
@@ -235,14 +434,18 @@ def build_case(case: Dict, out_dir: Path,
     out_dir.mkdir(parents=True, exist_ok=True)
     wav_path = out_dir / f"{case['name']}.wav"
 
-    notes = build_notes(case['melody'])
+    notes = case_notes(case)
     voice = PRESETS[case['voice']]
     # Seed from the case name so a given case is byte-identical run to run.
-    seed = abs(hash(case['name'])) % (2 ** 31)
+    seed = case_seed(case['name'])
 
     audio, duration = render_melody(notes, voice, sr,
                                     backing_level=case.get('backing', 0.0),
-                                    seed=seed)
+                                    seed=seed,
+                                    pulse_bpm=case.get('pulse_bpm',
+                                                       case.get('bpm', 0.0)),
+                                    pulse_level=case.get('pulse', 0.35)
+                                    if 'pattern' in case else 0.0)
     sf.write(str(wav_path), audio, sr)
 
     times, freqs = notes_to_f0(notes, duration=duration)
@@ -252,8 +455,7 @@ def build_case(case: Dict, out_dir: Path,
         times=times,
         freqs=freqs,
         notes=notes,
-        meta={'voice': case['voice'], 'melody': case['melody'],
-              'backing': case.get('backing', 0.0), 'synthetic': True},
+        meta=_case_meta(case),
     )
 
 
@@ -268,15 +470,13 @@ def build_dataset(out_dir, cases: Optional[List[Dict]] = None,
         wav_path = out_dir / f"{case['name']}.wav"
         if wav_path.exists() and not force:
             # Regenerate the annotation (cheap) but keep the audio (not).
-            notes = build_notes(case['melody'])
+            notes = case_notes(case)
             import soundfile as sf
             info = sf.info(str(wav_path))
             times, freqs = notes_to_f0(notes, duration=info.duration)
             truths.append(GroundTruth(
                 name=case['name'], audio_path=wav_path, times=times,
-                freqs=freqs, notes=notes,
-                meta={'voice': case['voice'], 'melody': case['melody'],
-                      'backing': case.get('backing', 0.0), 'synthetic': True},
+                freqs=freqs, notes=notes, meta=_case_meta(case),
             ))
         else:
             truths.append(build_case(case, out_dir))
