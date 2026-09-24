@@ -91,8 +91,15 @@ class KeyEstimate:
         tone, which is always written as the raised 7th. Minor melodies lean
         on it, and D minor's flats alone would call it Db - which reads as a
         wrong note, where C# reads as the leading tone it is.
+
+        Six flats (Gb major, Eb minor) flatten B as well, so pitch class 11
+        is Cb there: the flat table's 'B' would print as B natural under a
+        signature that flattens every B. No key here reaches six sharps
+        (F# major is written Gb), where E# would be the counterpart.
         """
         names = list(SPELLINGS[self.spelling])
+        if self.fifths == -6:
+            names[11] = 'Cb'
         if not self.is_major:
             names[(self.tonic - 1) % 12] = self._raised_seventh()
         return tuple(names)

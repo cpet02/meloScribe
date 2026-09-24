@@ -13,7 +13,8 @@ it on this machine (Windows, RTX 3060, venv at `./venv`), review it with care,
 and merge and push only if everything holds. When in doubt, stop and report:
 an unmerged branch costs nothing, a broken `main` costs the user's trust.
 
-The branch is given in your task (default `main-ob0jw0`). Read `HANDOFF.md`
+The branch is given in your task (see the skill for how it is found when
+none is named). Read `HANDOFF.md`
 first - its "Decisions that were expensive to learn" are review criteria, and
 its "Pending review" section says what the branch contains.
 

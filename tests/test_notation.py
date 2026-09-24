@@ -17,7 +17,7 @@ from meloscribe import notation, rhythm
 from meloscribe.key import KeyEstimate, note_names
 from meloscribe.lyrics.align import LyricLine, LyricWord, TimedLyrics, \
     attach_to_notes
-from meloscribe.musicxml import (MEDIA_TYPE, choose_clef, pitch_parts,
+from meloscribe.musicxml import (MEDIA_TYPE, choose_clef, clock, pitch_parts,
                                  to_musicxml, transpose_interval)
 from meloscribe.output import FORMATS, render
 from meloscribe.pitch.engine import TranscribedNote
@@ -456,6 +456,14 @@ def test_music21_reads_back_what_was_written():
     assert sounding == [midi for midi, _ in values if midi is not None]
 
 
+@pytest.mark.parametrize('seconds,shown', [
+    (1.0, '0:01.0'), (61.04, '1:01.0'), (59.95, '1:00.0'), (119.97, '2:00.0'),
+    (3599.99, '60:00.0')])
+def test_the_start_time_never_reads_sixty_seconds(seconds, shown):
+    # Split into minutes before rounding, 119.97 s read '1:60.0'.
+    assert clock(seconds) == shown
+
+
 # --------------------------------------------------------------------------
 # Command line
 # --------------------------------------------------------------------------
@@ -496,3 +504,76 @@ def test_cli_writes_sheet_music_and_quantised_midi(tmp_path, monkeypatch):
     positions = [n.start / beat * T for n in midi.instruments[0].notes]
     assert positions and all(abs(p - round(p)) < 1e-3 for p in positions)
     assert midi.time_signature_changes[0].numerator == 4
+
+
+# The CLI in its own process, so its stdout is a real redirected stream.
+_REDIRECTED_CLI = '''
+import sys
+from meloscribe import cli
+from meloscribe.key import KeyEstimate, note_names
+from meloscribe.pipeline import TranscriptionOutput
+from meloscribe.pitch.engine import TranscribedNote
+
+KEY = KeyEstimate(tonic=0, is_major=True, confidence=0.9)
+
+
+class FakePipeline:
+    def run(self, request, progress=None):
+        names = note_names(KEY, request.transpose)
+        notes = []
+        for i, midi in enumerate((60, 62, 64, 65)):
+            note = TranscribedNote(midi, 1.0 + 0.5 * i, 1.4 + 0.5 * i, 0.9,
+                                   lyric=sys.argv[2], syllable=sys.argv[2])
+            note.pitch_names = names
+            notes.append(note)
+        return TranscriptionOutput(notes=notes, key=KEY, request=request,
+                                   pitch_names=names)
+
+
+cli.Pipeline = FakePipeline
+sys.exit(cli.main(['missing.mp3', '--no-lyrics', '--quiet',
+                   '--format', sys.argv[1]]))
+'''
+
+
+@pytest.mark.parametrize('pickup,meter', [('-1', '4/4'), ('4', '4/4'),
+                                           ('3', '3/4')])
+def test_a_pickup_outside_the_bar_is_refused(tmp_path, pickup, meter, capsys):
+    from meloscribe import cli
+    with pytest.raises(SystemExit) as stop:
+        cli.main([str(tmp_path / 'song.mp3'), '--no-lyrics', '--musicxml',
+                  str(tmp_path / 'out.musicxml'), '--pickup', pickup,
+                  '--time-signature', meter])
+    assert stop.value.code == 2
+    assert '--pickup must be 0 to' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('fmt', ['musicxml', 'json', 'csv', 'lrc'])
+def test_redirected_output_is_utf8_whatever_the_console(tmp_path, fmt):
+    """Redirected on Windows, stdout is in the ANSI code page: cp1252 wrote a
+    curly apostrophe as a byte no UTF-8 reader accepts - in MusicXML that
+    says it is UTF-8 - and could not encode a '♪' at all."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    lyric = 'don’t ♪ 愛'
+    script = tmp_path / 'redirected_cli.py'
+    script.write_text(_REDIRECTED_CLI, encoding='utf-8')
+    env = {k: v for k, v in os.environ.items()
+           if k not in ('PYTHONUTF8', 'PYTHONIOENCODING')}
+    env['PYTHONPATH'] = str(Path(__file__).resolve().parent.parent)
+    done = subprocess.run([sys.executable, str(script), fmt, lyric],
+                          capture_output=True, cwd=tmp_path, env=env,
+                          timeout=300)
+    assert done.returncode == 0, done.stderr.decode('utf-8', 'replace')[-2000:]
+    text = done.stdout.decode('utf-8')      # not UTF-8: UnicodeDecodeError
+    if fmt == 'musicxml':
+        root = ET.fromstring(done.stdout)
+        assert lyric in [t.text for t in root.iter('text')]
+    elif fmt == 'json':
+        import json
+        assert json.loads(text)['notes'][0]['lyric'] == lyric
+    else:
+        assert lyric in text

@@ -31,7 +31,7 @@ dependencies = [
 # Each measurably improves results; a missing one disables its feature with a
 # warning rather than breaking the run.
 extras = ["torchcrepe", "faster-whisper"]
-dev = ["pytest", "mir_eval", "httpx"]
+dev = ["pytest", "mir_eval", "httpx", "music21"]
 
 [project.scripts]
 meloscribe = "meloscribe.cli:main"

@@ -311,6 +311,48 @@ def _song(texts, gap=0.5, line_length=2.0, rest_after=()):
     return notes, lines
 
 
+def test_thresholds_hold_for_note_times_on_the_frame_grid():
+    # Note times are frame times, k * HOP. In floating point a rest of
+    # exactly 45 frames came out as 0.44999999999999996 for most k, and did
+    # not end the phrase; a 250-frame break likewise missed PART_BREAK.
+    from meloscribe.pitch.grid import HOP
+    t = [k * HOP for k in range(2000)]
+    for k in range(100, 1500, 7):
+        notes = [_note(t[k - 90], t[k]), _note(t[k + 45], t[k + 145])]
+        assert len(S.build_sections(notes).lines) == 2, k
+    for k in range(100, 1500, 11):
+        notes = [_note(t[k - 90], t[k]), _note(t[k + 250], t[k + 350])]
+        assert len(S.build_sections(notes).parts) == 2, k
+
+
+def test_sections_do_not_depend_on_float_noise():
+    """Times on the 10ms grid tie and hit thresholds exactly all the time, so
+    a nanosecond of jitter must not regroup anything. Before comparisons
+    were rounded it regrouped more than half of these layouts."""
+    rng, jitter = random.Random(7), random.Random(8)
+    for _ in range(200):
+        notes, lines, t = [], [], 0.0
+        for _ in range(rng.randint(3, 60)):
+            t += rng.choice([0, 1, 15, 44, 45, 46, 135, 249, 250, 251]) * 0.01
+            d = rng.choice([3, 15, 30, 59, 60, 61, 200]) * 0.01
+            notes.append((t, t + d))
+            t += d
+        k = 0.0
+        while rng.random() < 0.7 and k < t:
+            lines.append((k, rng.choice('xyzw')))
+            k += rng.choice([100, 150, 250, 400]) * 0.01
+
+        def grouping(eps):
+            shake = lambda x: x + jitter.uniform(-eps, eps)  # noqa: E731
+            result = S.build_sections(
+                [_note(shake(s), shake(e)) for s, e in notes],
+                [_line(shake(s), text) for s, text in lines] or None)
+            return ([s.note_indices for s in result.lines],
+                    [p.note_indices for p in result.parts])
+
+        assert grouping(1e-9) == grouping(0.0), (notes, lines)
+
+
 def test_a_long_silence_starts_a_new_part():
     notes, lines = _song(['a', 'b', 'c', 'd'], rest_after={1})
     result = S.build_sections(notes, lines)
@@ -350,6 +392,34 @@ def test_singing_past_a_line_end_does_not_hide_the_chorus():
         'verse three / verse four', 'chorus a / chorus b', 'outro']
     assert [p.repeat_of for p in result.parts] == [None, None, None, 1, None]
     _assert_partition(result, len(notes))
+
+
+def test_a_line_sung_over_and_over_is_one_unit_not_a_chorus():
+    # Found as a block repeating itself, it was cut into parts of a line or
+    # two: 6 parts, 4 of them a single line.
+    notes, lines = _song(['intro'] + ['na na na'] * 8 + ['outro'])
+    result = S.build_sections(notes, lines)
+    assert len(result.parts) == 1 and result.parts[0].repeat_of is None
+
+
+def test_four_identical_lines_are_not_a_block_repeating_itself():
+    notes, lines = _song(['la'] * 4)
+    result = S.build_sections(notes, lines)
+    assert len(result.parts) == 1 and result.parts[0].repeat_of is None
+
+
+def test_a_chorus_is_one_part_even_when_its_halves_repeat():
+    # 'A B A B C' sung twice also holds 'A B' four times; only the whole
+    # block is structure, or each chorus is cut into [A B][A B][C].
+    chorus = ['hold me', 'close', 'hold me', 'close', 'never let go']
+    texts = (['verse one', 'verse two'] + chorus
+             + ['verse three', 'verse four'] + chorus)
+    notes, lines = _song(texts)
+    result = S.build_sections(notes, lines)
+    assert [p.text for p in result.parts] == [
+        'verse one / verse two', ' / '.join(chorus),
+        'verse three / verse four', ' / '.join(chorus)]
+    assert [p.repeat_of for p in result.parts] == [None, None, None, 1]
 
 
 def test_one_repeated_line_is_not_structure():

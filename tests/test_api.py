@@ -15,7 +15,7 @@ import soundfile as sf
 fastapi = pytest.importorskip('fastapi')
 from fastapi.testclient import TestClient  # noqa: E402
 
-from meloscribe.api import app as app_module, media  # noqa: E402
+from meloscribe.api import app as app_module  # noqa: E402
 from meloscribe.api.app import app  # noqa: E402
 from meloscribe.api.jobs import JobStatus  # noqa: E402
 from meloscribe.lyrics.align import LyricLine, TimedLyrics  # noqa: E402
@@ -67,6 +67,21 @@ def test_health_reports_capabilities():
     assert isinstance(body['voters'], dict) and body['voters']
 
 
+def test_other_websites_cannot_read_the_local_api():
+    """A page on any site the user visits must not be able to list their jobs
+    or fetch their uploads from this server; a dev server on localhost can."""
+    foreign = client.get('/api/jobs', headers={'Origin': 'https://example.com'})
+    assert 'access-control-allow-origin' not in foreign.headers
+    preflight = client.options('/api/jobs', headers={
+        'Origin': 'https://example.com', 'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type'})
+    assert preflight.status_code == 400
+    for origin in ('http://localhost:5173', 'http://127.0.0.1:8000',
+                   'http://[::1]:3000'):
+        local = client.get('/api/jobs', headers={'Origin': origin})
+        assert local.headers['access-control-allow-origin'] == origin
+
+
 def test_index_serves_the_ui():
     response = client.get('/')
     assert response.status_code == 200
@@ -111,9 +126,29 @@ def test_no_lyrics_bypasses_the_name_requirement(clip):
 
 
 def test_unknown_upload_id_is_404():
-    response = client.post('/api/jobs', json={'upload_id': 'nope.mp3',
+    response = client.post('/api/jobs', json={'upload_id': '0123456789ab.mp3',
                                               'lyrics_mode': 'off'})
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize('upload_id', [
+    'CON', 'con.wav', 'NUL.mp3', 'CONIN$', r'\\host\share\x.wav',
+    '//host/share/x.wav', 'nope.mp3', '0123456789ab.exe', '0123456789AB.wav',
+    '0123456789ab.wav ', '0123456789ab.wav/..'])
+def test_malformed_upload_ids_never_reach_the_filesystem(upload_id, monkeypatch):
+    """On Windows 'CON' or 'NUL.mp3' is a device that "exists" - reading it
+    blocks the only worker for good - and resolving '\\\\host\\share' opens an
+    SMB connection. Only ids shaped like the ones /api/upload hands out are
+    looked up at all."""
+    import pathlib
+    resolved = []
+    real = pathlib.Path.resolve
+    monkeypatch.setattr(pathlib.Path, 'resolve',
+                        lambda self, *a, **k: resolved.append(self) or real(self, *a, **k))
+    response = client.post('/api/jobs',
+                           json={'upload_id': upload_id, 'lyrics_mode': 'off'})
+    assert response.status_code == 400
+    assert resolved == []
 
 
 def test_path_traversal_upload_id_is_rejected():
@@ -227,6 +262,7 @@ def test_unknown_download_format_is_rejected(clip):
 # separation - only the API's own handling of a finished result.
 
 SONG = bytes(range(256)) * 400
+UPLOAD_ID = '0123456789ab.wav'    # shaped like the ids /api/upload hands out
 
 
 @pytest.fixture
@@ -240,7 +276,7 @@ def uploads(tmp_path, monkeypatch):
 
 def _inject_job(uploads, vocals=None, vocals_only=False, transpose=0,
                 status=JobStatus.DONE):
-    (uploads / 'song.wav').write_bytes(SONG)
+    (uploads / UPLOAD_ID).write_bytes(SONG)
     notes = [TranscribedNote(60, 10.2, 10.6, 0.9),
              TranscribedNote(62, 11.0, 11.5, 0.9),
              TranscribedNote(64, 14.1, 14.5, 0.9),
@@ -255,7 +291,7 @@ def _inject_job(uploads, vocals=None, vocals_only=False, transpose=0,
         result.stems = StemResult(stems={'vocals': vocals}, model='test',
                                   device='cpu', cached=True)
     job = app_module.jobs.create(filename='song.wav', params={
-        'upload_id': 'song.wav', 'transpose': transpose,
+        'upload_id': UPLOAD_ID, 'transpose': transpose,
         'vocals_only': vocals_only})
     job.result = result
     job.status = status
@@ -289,13 +325,8 @@ def test_audio_without_a_range_is_the_whole_file(uploads):
     assert response.headers['content-type'].startswith('audio/')
 
 
-@pytest.mark.parametrize('native', [True, False])
-def test_audio_range_request_gets_exactly_those_bytes(uploads, monkeypatch,
-                                                      native):
-    """How the browser seeks to a section, on either Starlette code path."""
-    if native and not media.NATIVE_RANGES:
-        pytest.skip('this Starlette cannot serve ranges itself')
-    monkeypatch.setattr(media, 'NATIVE_RANGES', native)
+def test_audio_range_request_gets_exactly_those_bytes(uploads):
+    """How the browser seeks to a section."""
     job = _inject_job(uploads)
     response = client.get(f"/api/jobs/{job.id}/audio/mix",
                           headers={'Range': 'bytes=1000-1999'})

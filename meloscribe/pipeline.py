@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .key import (SPELLINGS, KeyEstimate, estimate_key, note_names,
-                  note_spelling)
+                  note_spelling, signature_key)
 from .lyrics.lrclib import TrackQuery, describe_track
 from .lyrics.service import LyricsMode, LyricsOutcome, LyricsService
 from .pitch.engine import (EngineSettings, PitchEngine, TranscribedNote,
@@ -108,9 +108,12 @@ class TranscriptionOutput:
     @property
     def written_key(self) -> Optional[KeyEstimate]:
         """The key the transposed notes are written in; None when they are
-        not transposed, and `key` - the concert key - already is it."""
+        not transposed, and `key` - the concert key - already is it, and when
+        the key is too uncertain to spell by: the notes then take plain
+        sharps and the sheet music no key signature, so naming a written key
+        would contradict both."""
         transpose = self.request.transpose if self.request else 0
-        return self.key.transposed(transpose) if self.key and transpose else None
+        return signature_key(self.key, transpose) if transpose else None
 
     def to_dict(self) -> Dict[str, Any]:
         written = self.written_key

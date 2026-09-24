@@ -111,7 +111,14 @@ examples:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    # A pickup is part of a bar: out of range it silently wrapped round it
+    # (-1 gave a three-beat pickup in 4/4, and 4 none at all).
+    beats_per_bar = int(args.time_signature.split('/')[0])
+    if not 0 <= args.pickup < beats_per_bar:
+        parser.error(f"--pickup must be 0 to {beats_per_bar - 1} beats in "
+                     f"{args.time_signature}")
 
     mode = LyricsMode.OFF if args.no_lyrics else LyricsMode(args.lyrics_mode)
 
@@ -224,9 +231,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not args.quiet:
             print(f"written: {args.output}", file=sys.stderr)
     else:
+        _write_utf8(sys.stdout)
         print(text)
 
     return 0
+
+
+def _write_utf8(stream) -> None:
+    """Make `stream` write UTF-8, as `-o` does: every format here is UTF-8 -
+    MusicXML says so in its header, JSON requires it. Redirected on Windows,
+    stdout is in the ANSI code page instead: cp1252 wrote a curly apostrophe
+    as a byte no UTF-8 reader accepts, and could not encode '♪' at all. A
+    console already takes Unicode and is left alone."""
+    encoding = (getattr(stream, 'encoding', None) or '').lower()
+    if encoding.replace('-', '').replace('_', '') != 'utf8' \
+            and hasattr(stream, 'reconfigure'):
+        stream.reconfigure(encoding='utf-8')
 
 
 def _describe_score(score) -> str:

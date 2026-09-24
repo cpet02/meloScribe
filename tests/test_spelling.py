@@ -72,10 +72,37 @@ def test_every_key_is_named_and_spelled_by_its_signature(tonic, is_major,
     assert note_spelling(key) == spelling
 
 
+def _signature_table(key):
+    """The flat or sharp table, with Cb for the B that six flats flatten."""
+    names = list(SPELLINGS[key.spelling])
+    if key.fifths == -6:
+        names[11] = 'Cb'
+    return names
+
+
 def test_major_keys_name_every_pitch_by_their_signature():
     for tonic in range(12):
         key = KeyEstimate(tonic=tonic, is_major=True, confidence=0.9)
-        assert key.pitch_names == SPELLINGS[key.spelling], key.name
+        assert list(key.pitch_names) == _signature_table(key), key.name
+
+
+@pytest.mark.parametrize('is_major', [True, False])
+@pytest.mark.parametrize('tonic', range(12))
+def test_every_key_spells_its_own_scale_with_seven_letters(tonic, is_major):
+    """A signature sharpens or flattens whole letters, so a key's own scale
+    uses each letter once. Six flats (Gb major, Eb minor) called their Cb
+    'B' - B natural, under a signature that flattens every B."""
+    key = KeyEstimate(tonic=tonic, is_major=is_major, confidence=0.9)
+    steps = (0, 2, 4, 5, 7, 9, 11) if is_major else (0, 2, 3, 5, 7, 8, 10)
+    letters = sorted(key.pitch_names[(tonic + s) % 12][0] for s in steps)
+    assert letters == list('ABCDEFG'), key.name
+
+
+def test_six_flats_write_cb_an_octave_up_from_its_b():
+    for key in (KeyEstimate(tonic=6, is_major=True, confidence=0.9),
+                KeyEstimate(tonic=3, is_major=False, confidence=0.9)):
+        assert midi_to_name(71, key.pitch_names) == 'Cb5', key.name
+        assert midi_to_name(59, key.pitch_names) == 'Cb4', key.name
 
 
 @pytest.mark.parametrize('tonic,leading_tone', [
@@ -90,7 +117,7 @@ def test_a_minor_key_writes_its_leading_tone_as_the_raised_seventh(
     leading = (tonic - 1) % 12
     assert key.pitch_names[leading] == leading_tone
     assert [n for pc, n in enumerate(key.pitch_names) if pc != leading] == \
-        [n for pc, n in enumerate(SPELLINGS[key.spelling]) if pc != leading]
+        [n for pc, n in enumerate(_signature_table(key)) if pc != leading]
 
 
 def test_d_and_g_minor_keep_their_flats_beside_the_raised_seventh():
@@ -301,7 +328,8 @@ def test_alto_part_of_an_f_minor_song_sharpens_d_minors_leading_tone(
 def test_untransposed_output_has_no_separate_written_key(tmp_path, monkeypatch):
     output = _run(tmp_path, monkeypatch, GB_MAJOR, 0)
 
-    assert [n.name for n in output.notes] == ['Gb4', 'B4', 'Db5']
+    # Gb major's 4th is Cb - written an octave up from the B it sounds as.
+    assert [n.name for n in output.notes] == ['Gb4', 'Cb5', 'Db5']
     assert output.written_key is None
     assert output.to_dict()['written_key'] is None
 
@@ -315,6 +343,10 @@ def test_uncertain_key_spells_the_same_pitches_with_sharps(tmp_path,
     assert [n.midi for n in output.notes] == [n.midi for n in trusted.notes]
     assert [n.name for n in output.notes] == ['D#5', 'G#5', 'A#5']
     assert (output.spelling, output.pitch_names) == ('sharp', SHARPS)
+    # Nor is a written key named: sharps under "written: Eb major" would
+    # contradict it, as would the sheet music, which shows no signature.
+    assert output.written_key is None
+    assert output.to_dict()['written_key'] is None
     assert any('spelling notes with sharps' in w for w in output.warnings)
 
 

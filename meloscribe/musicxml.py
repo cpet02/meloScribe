@@ -254,11 +254,16 @@ def _opening_directions(measure: ET.Element, score: QuantizedScore) -> None:
         notes.append('Approximate rhythm: no reliable beat was found, so the '
                      'tempo is estimated from the note spacing')
     if score.origin_s >= 1.0:
-        minutes, seconds = divmod(score.origin_s, 60.0)
-        notes.append(f"Starts {int(minutes)}:{seconds:04.1f} into the "
-                     f"recording")
+        notes.append(f"Starts {clock(score.origin_s)} into the recording")
     for text in notes:
         _words(measure, text, placement='above')
+
+
+def clock(seconds: float) -> str:
+    """'m:ss.s'. Rounded before the minutes are split off, or 119.97 s would
+    read '1:60.0'."""
+    minutes, rest = divmod(round(seconds, 1), 60.0)
+    return f"{int(minutes)}:{rest:04.1f}"
 
 
 def _words(measure: ET.Element, text: str, placement: str,

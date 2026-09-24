@@ -4,14 +4,18 @@ An <audio> element jumps to a section by asking for a byte range. Without
 Range support it can only play from the start: every jump means downloading
 the song up to that point, and some browsers refuse to seek at all.
 
-Starlette's FileResponse answers Range requests from 0.39 on, and when it can,
-it is what serves the file - a library's own implementation over a
-hand-rolled one. Older Starlette, which an older FastAPI pins, returns 200
-and the whole body for every request, so for those a single byte range is
-served by hand.
+Ranges are served here rather than by Starlette's FileResponse (which answers
+them from 0.39 on), for a Windows reason: FileResponse keeps the file open
+until the whole response is sent, and a browser that pauses playback simply
+stops reading, so the handle can stay open for as long as the tab does. While
+any handle is open Windows refuses to delete or rename the file, and
+re-separating a song whose vocal stem had been playing failed - the stem cache
+could not replace its entry. Here the file is opened for each chunk and closed
+again before the chunk is sent, so nothing holds it while the client is not
+reading.
 
-Depends on Starlette and the standard library only, so it can be imported,
-and its fallback tested, without the rest of the app.
+Depends on Starlette and the standard library only, so it can be imported and
+tested without the rest of the app.
 """
 
 from __future__ import annotations
@@ -19,58 +23,60 @@ from __future__ import annotations
 import mimetypes
 import os
 import re
-from typing import Iterator, Optional, Tuple
+from email.utils import formatdate
+from typing import Dict, Iterator, Optional, Tuple
 
-import starlette
-from starlette.responses import FileResponse, Response, StreamingResponse
+from starlette.responses import Response, StreamingResponse
 
 CHUNK_SIZE = 64 * 1024
+
+# The formats uploads come in. mimetypes alone differs by machine: on Windows
+# it reads the registry, which calls '.aac' 'audio/vnd.dlna.adts'.
+AUDIO_TYPES = {'.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.flac': 'audio/flac',
+               '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.opus': 'audio/ogg',
+               '.aac': 'audio/aac'}
 
 # One range; `bytes=a-b`, `bytes=a-` or `bytes=-n`. Several ranges at once
 # are legal but no browser seeks that way, so they get the whole file.
 _BYTE_RANGE = re.compile(r'^\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*$', re.IGNORECASE)
 
 
-def serves_ranges(version: str) -> bool:
-    """Whether a Starlette version's FileResponse answers Range requests."""
-    match = re.match(r'(\d+)\.(\d+)', version)
-    # An unreadable version gets the fallback: it works on every Starlette,
-    # while trusting FileResponse on an old one silently breaks seeking.
-    return bool(match) and (int(match.group(1)), int(match.group(2))) >= (0, 39)
-
-
-# Read at call time, so a test can force the fallback on a new Starlette.
-NATIVE_RANGES = serves_ranges(starlette.__version__)
-
-
 def audio_response(path, range_header: Optional[str] = None,
-                   media_type: Optional[str] = None) -> Response:
-    """A response for `path` that honours a Range request on any Starlette."""
-    media_type = (media_type or mimetypes.guess_type(str(path))[0]
-                  or 'application/octet-stream')
-    if NATIVE_RANGES:
-        return FileResponse(path, media_type=media_type)
+                   media_type: Optional[str] = None,
+                   if_range: Optional[str] = None) -> Response:
+    """A response for `path` that honours a single-range Range request.
 
+    `if_range` is the request's If-Range header: a range is served only if
+    it names the file as it is now, or a client resuming a download could
+    stitch bytes of two different files together.
+    """
+    media_type = (media_type or AUDIO_TYPES.get(os.path.splitext(str(path))[1].lower())
+                  or mimetypes.guess_type(str(path))[0] or 'application/octet-stream')
+    stat = os.stat(path)
+    size = stat.st_size
+    validators = _validators(stat)
     # Advertised even on a 200, or the browser never asks for a range.
-    whole = _WholeFile(path, media_type=media_type,
-                       headers={'Accept-Ranges': 'bytes'})
-    if not range_header:
-        return whole
+    headers = {'Accept-Ranges': 'bytes', **validators}
 
-    size = os.stat(path).st_size
-    span = parse_range(range_header, size)
+    span = parse_range(range_header, size) if range_header else None
+    if span is not None and if_range is not None \
+            and if_range.strip() not in validators.values():
+        span = None  # changed since the client's first request: all of it
+
     if span is None:
-        return whole  # malformed: ignoring Range is always allowed
+        # No range, a malformed one (ignoring Range is always allowed), or a
+        # stale If-Range.
+        return StreamingResponse(_read(path, 0, size, stat), media_type=media_type,
+                                 headers={**headers, 'Content-Length': str(size)})
     if span == ():
         return Response(status_code=416,
                         headers={'Content-Range': f"bytes */{size}"})
 
     start, end = span
     return StreamingResponse(
-        _read(path, start, end - start + 1), status_code=206,
+        _read(path, start, end - start + 1, stat), status_code=206,
         media_type=media_type,
-        headers={'Content-Range': f"bytes {start}-{end}/{size}",
-                 'Accept-Ranges': 'bytes',
+        headers={**headers, 'Content-Range': f"bytes {start}-{end}/{size}",
                  'Content-Length': str(end - start + 1)})
 
 
@@ -101,25 +107,42 @@ def parse_range(header: str, size: int) -> Optional[Tuple[int, ...]]:
     return (first_byte, min(last_byte, size - 1))
 
 
-class _WholeFile(FileResponse):
-    """The whole file, whatever the Range header says.
+def _validators(stat: os.stat_result) -> Dict[str, str]:
+    """ETag and Last-Modified for the file as it is now: what If-Range and a
+    browser's cache compare against."""
+    return {'ETag': f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"',
+            'Last-Modified': formatdate(stat.st_mtime, usegmt=True)}
 
-    Old Starlette behaves this way anyway. A new one would act on the header
-    itself, so when the fallback is forced there (in tests) it would not be
-    the fallback being exercised.
+
+def _read(path, start: int, length: int,
+          served: Optional[os.stat_result] = None) -> Iterator[bytes]:
+    """Bytes [start, start + length) of `path`, a chunk at a time.
+
+    The file is open only while a chunk is read, never while the chunk waits
+    for the client to take it (see the module docstring). Reopened by name,
+    it may meanwhile have been deleted or replaced - re-separation renames
+    new stems into place - so each chunk is checked against `served`, the
+    file the response's headers describe, and the response ends short
+    rather than splice the new file's bytes under the old one's ETag and
+    length. The client asks again, and If-Range sorts out which file it gets.
     """
-
-    async def __call__(self, scope, receive, send) -> None:
-        headers = [(k, v) for k, v in scope['headers'] if k != b'range']
-        await super().__call__({**scope, 'headers': headers}, receive, send)
-
-
-def _read(path, start: int, length: int) -> Iterator[bytes]:
-    with open(path, 'rb') as handle:
-        handle.seek(start)
-        while length > 0:
-            chunk = handle.read(min(CHUNK_SIZE, length))
-            if not chunk:
-                return
-            length -= len(chunk)
-            yield chunk
+    position = start
+    while length > 0:
+        try:
+            with open(path, 'rb') as handle:
+                if served is not None:
+                    now = os.fstat(handle.fileno())
+                    if (now.st_size, now.st_mtime_ns) != (served.st_size,
+                                                          served.st_mtime_ns):
+                        return
+                handle.seek(position)
+                chunk = handle.read(min(CHUNK_SIZE, length))
+        except OSError:
+            # Deleted (FileNotFoundError), or being deleted on Windows
+            # (PermissionError): end it here as well.
+            return
+        if not chunk:
+            return
+        position += len(chunk)
+        length -= len(chunk)
+        yield chunk

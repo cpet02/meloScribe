@@ -11,7 +11,8 @@ The layout is one track per stem, in one folder:
     <name>.notes.csv   optional reference notes, `onset,offset,midi` rows
 
 A CSV whose stem carries a further dot (`x.notes.csv`, `x.notes.A2.csv`,
-`x.alto.csv`) is an auxiliary annotation of track `x`, never a track itself.
+`x.alto.csv`) and has no audio of its own is an auxiliary annotation of track
+`x`, not a track; with matching audio (`01. Intro.wav`) it is a track.
 When `<name>.notes.csv` exists the harness scores note F1 against it instead of
 against notes re-derived from the f0 curve, which is the difference between
 grading segmentation against a human and grading it against a heuristic.
@@ -19,7 +20,8 @@ grading segmentation against a human and grading it against a heuristic.
 None of the public corpora ship in this layout - vocadito keeps audio and f0
 in different folders under different stems - so each has a converter. Every
 converter reproduces the parsing of that corpus's loader in `mirdata`, rather
-than re-deriving frame timings or tuning from the papers.
+than re-deriving frame timings or tuning from the papers - except TONAS note
+pitches, where mirdata applies the tuning twice (see `convert_tonas`).
 """
 
 from __future__ import annotations
@@ -156,10 +158,21 @@ def convert_ikala(src, dst) -> List[str]:
 
 # --- TONAS ------------------------------------------------------------------
 # <style>/<id>.wav, <id>.f0.Corrected (time, energy, f0 auto, f0 corrected),
-# <id>.notes.Corrected: first line the tuning offset in cents, then rows of
-# (onset, duration, midi, energy) relative to that tuning.
+# <id>.notes.Corrected: first line the singer's tuning in cents from A440, then
+# rows of (onset, duration, midi, energy), where midi is fractional and already
+# includes that tuning.
 
 def convert_tonas(src, dst) -> List[str]:
+    """TONAS, with note pitches taken as stored.
+
+    The MIDI column already carries the tuning: mirdata's sample file has
+    tuning 43 and notes 66.43 and 67.43, and the corrected f0 over the first
+    note reads 379.3 Hz - MIDI 66.43 too. mirdata's `_midi_to_hz` adds the
+    tuning again, as this converter first did, which puts every note that
+    many cents sharp: 43 cents moves a note across the 50-cent scoring
+    tolerance. The dataset's own documentation could not be read to settle
+    it, so each file's notes are checked against its f0 as they are read.
+    """
     src, dst = Path(src), Path(dst)
     dst.mkdir(parents=True, exist_ok=True)
     names = []
@@ -173,13 +186,35 @@ def convert_tonas(src, dst) -> List[str]:
         write_f0_csv(dst / f'{audio.stem}.csv', data[:, 0], data[:, 3])
         if notes.exists():
             rows = [r for r in csv.reader(notes.read_text().splitlines()) if r]
-            tuning_cents = float(rows[0][0])
-            write_notes_csv(dst / f'{audio.stem}{NOTES_SUFFIX}.csv', [
-                Note(onset=float(r[0]), offset=float(r[0]) + float(r[1]),
-                     midi=float(r[2]) + tuning_cents / 100.0)
-                for r in rows[1:] if len(r) >= 3 and float(r[1]) > 0])
+            reference = [Note(onset=float(r[0]), offset=float(r[0]) + float(r[1]),
+                              midi=float(r[2]))
+                         for r in rows[1:] if len(r) >= 3 and float(r[1]) > 0]
+            _warn_if_notes_leave_the_f0(reference, data[:, 0], data[:, 3],
+                                        audio.stem)
+            write_notes_csv(dst / f'{audio.stem}{NOTES_SUFFIX}.csv', reference)
         names.append(audio.stem)
     return names
+
+
+def _warn_if_notes_leave_the_f0(notes: List[Note], times: np.ndarray,
+                                hz: np.ndarray, name: str) -> None:
+    """Warn when reference notes sit consistently off the corpus's own f0.
+
+    A misread pitch convention (a tuning applied twice, or not at all) shows
+    up as every note off by the same cents - which note F1's 50-cent tolerance
+    turns into wrong matches without any error.
+    """
+    offsets = []
+    for note in notes:
+        inside = (times >= note.onset) & (times < note.offset) & (hz > 0)
+        if inside.any():
+            offsets.append(100.0 * (float(np.median(hz_to_midi(hz[inside])))
+                                    - note.midi))
+    if offsets and abs(float(np.median(offsets))) > 25.0:
+        import warnings
+        warnings.warn(f"{name}: reference notes sit {np.median(offsets):+.0f} "
+                      f"cents from the f0 annotation - check the tuning "
+                      f"convention before trusting note F1 on this corpus")
 
 
 # --- MedleyDB-Melody --------------------------------------------------------
@@ -194,6 +229,11 @@ def convert_medleydb_melody(src, dst, definition: int = 2,
     over to an instrument for a solo, which is what the corpus defines as
     melody - so a vocal transcriber is expected to lose some frames here.
     """
+    if definition not in (1, 2):
+        # MELODY3 gives every melodic line its own column. One f0 track per
+        # song cannot hold that, and keeping the first column was wrong.
+        raise ValueError(f"MedleyDB melody definition {definition} is not a "
+                         f"single line; use 1 or 2")
     src, dst = Path(src), Path(dst)
     dst.mkdir(parents=True, exist_ok=True)
     meta_path = src / 'medleydb_melody_metadata.json'

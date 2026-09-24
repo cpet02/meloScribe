@@ -2,10 +2,9 @@
 
 The module is loaded from its file rather than imported as part of the
 package, so this runs with nothing but Starlette, httpx and pytest installed.
-That is how the fallback is checked against an old Starlette, whose
-FileResponse ignores Range.
 """
 
+import asyncio
 import importlib.util
 import os
 from pathlib import Path
@@ -36,42 +35,25 @@ def audio(tmp_path):
     return path
 
 
-@pytest.fixture(params=['fallback', 'native'])
-def client(request, audio, monkeypatch):
-    """A client for a one-route app serving `audio`, on each code path."""
-    if request.param == 'native':
-        if not media.NATIVE_RANGES:
-            pytest.skip('this Starlette cannot serve ranges itself')
-    else:
-        monkeypatch.setattr(media, 'NATIVE_RANGES', False)
-
+def _client(path):
+    """A client for a one-route app serving `path`."""
     def endpoint(req: Request):
-        return media.audio_response(audio, req.headers.get('range'))
+        return media.audio_response(path, req.headers.get('range'),
+                                    if_range=req.headers.get('if-range'))
 
     return TestClient(Starlette(routes=[Route('/audio', endpoint)]))
 
 
 @pytest.fixture
-def fallback(audio, monkeypatch):
-    monkeypatch.setattr(media, 'NATIVE_RANGES', False)
-
-    def endpoint(req: Request):
-        return media.audio_response(audio, req.headers.get('range'))
-
-    return TestClient(Starlette(routes=[Route('/audio', endpoint)]))
+def client(audio):
+    return _client(audio)
 
 
-def _get(client, header=None):
-    return client.get('/audio', headers={'Range': header} if header else {})
+def _get(client, header=None, **headers):
+    if header:
+        headers['Range'] = header
+    return client.get('/audio', headers=headers)
 
-
-# --------------------------------------------------------------------------
-# Behaviour both paths share
-# --------------------------------------------------------------------------
-# Only what seeking needs. Starlette's own handling, 0.39 to at least 0.41.3,
-# differs at the edges no browser seeks with - a 416 whose Content-Range
-# lacks its unit, and a 416 for a suffix longer than the file - so those are
-# checked on the fallback alone.
 
 @pytest.mark.parametrize('header,first,last', [
     ('bytes=10-19', 10, 19),
@@ -80,6 +62,7 @@ def _get(client, header=None):
     ('bytes=-50', SIZE - 50, SIZE - 1),
     (f'bytes=0-{SIZE * 2}', 0, SIZE - 1),        # end past the file: clamped
     (f'bytes={SIZE - 1}-{SIZE - 1}', SIZE - 1, SIZE - 1),
+    (f'bytes=-{SIZE * 2}', 0, SIZE - 1),         # suffix longer than the file
 ])
 def test_a_single_range_is_served_byte_exact(client, header, first, last):
     response = _get(client, header)
@@ -94,53 +77,102 @@ def test_a_single_range_is_served_byte_exact(client, header, first, last):
 @pytest.mark.parametrize('header', [f'bytes={SIZE}-', f'bytes={SIZE + 5}-{SIZE + 9}',
                                     'bytes=-0'])
 def test_a_range_past_the_end_is_unsatisfiable(client, header):
-    assert _get(client, header).status_code == 416
+    response = _get(client, header)
+    assert response.status_code == 416
+    assert response.headers['content-range'] == f"bytes */{SIZE}"
 
 
 def test_no_range_gets_the_whole_file_and_an_invitation_to_seek(client):
     response = _get(client)
     assert response.status_code == 200
     assert response.content == DATA
+    assert response.headers['content-length'] == str(SIZE)
     # Without this on the 200 the browser never asks for a range at all.
     assert response.headers['accept-ranges'] == 'bytes'
 
 
-# --------------------------------------------------------------------------
-# The fallback's own rules
-# --------------------------------------------------------------------------
-
-@pytest.mark.parametrize('header', [f'bytes={SIZE}-', 'bytes=-0'])
-def test_fallback_says_how_long_the_file_is_when_refusing(fallback, header):
-    response = _get(fallback, header)
-    assert response.status_code == 416
-    assert response.headers['content-range'] == f"bytes */{SIZE}"
-
-
-def test_fallback_serves_all_of_a_suffix_longer_than_the_file(fallback):
-    response = _get(fallback, f'bytes=-{SIZE * 2}')
-    assert response.status_code == 206
-    assert response.content == DATA
-    assert response.headers['content-range'] == f"bytes 0-{SIZE - 1}/{SIZE}"
-
 @pytest.mark.parametrize('header', ['bytes=abc', 'items=0-10', 'bytes=0-1,5-6',
                                     'bytes=19-10', 'bytes=-', '0-10'])
-def test_fallback_ignores_a_malformed_range(fallback, header):
-    response = _get(fallback, header)
+def test_a_malformed_range_is_ignored(client, header):
+    response = _get(client, header)
     assert response.status_code == 200
     assert response.content == DATA
     assert response.headers['accept-ranges'] == 'bytes'
 
 
-def test_fallback_on_an_empty_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(media, 'NATIVE_RANGES', False)
+def test_an_empty_file(tmp_path):
     empty = tmp_path / 'empty.wav'
     empty.write_bytes(b'')
-    app = Starlette(routes=[Route('/audio', lambda req: media.audio_response(
-        empty, req.headers.get('range')))])
-    client = TestClient(app)
+    client = _client(empty)
     assert _get(client, 'bytes=0-').status_code == 416
     assert _get(client, 'bytes=-10').status_code == 416
-    assert _get(client).status_code == 200
+    response = _get(client)
+    assert response.status_code == 200 and response.content == b''
+
+
+def test_if_range_serves_a_range_only_of_the_same_file(client):
+    whole = _get(client)
+    for validator in (whole.headers['etag'], whole.headers['last-modified']):
+        same = _get(client, 'bytes=10-19', **{'If-Range': validator})
+        assert same.status_code == 206 and same.content == DATA[10:20]
+    # Changed since the client's first request: a range of it would splice
+    # two different files, so the whole file comes back instead.
+    stale = _get(client, 'bytes=10-19', **{'If-Range': '"not-this-file"'})
+    assert stale.status_code == 200 and stale.content == DATA
+
+
+def test_a_response_mid_send_does_not_hold_the_file(audio):
+    """A paused browser simply stops reading. On Windows a file cannot be
+    deleted or renamed while a handle is open, so serving that held one
+    made re-separating the song fail; between chunks nothing may hold it."""
+    response = media.audio_response(audio, 'bytes=0-')
+
+    async def client_that_stops_reading():
+        body = response.body_iterator
+        first = await body.__anext__()
+        # What re-separation does to the stem the browser was playing.
+        os.replace(audio, audio.with_name('replaced.wav'))
+        await body.aclose()
+        return first
+
+    assert asyncio.run(client_that_stops_reading()) == DATA[:media.CHUNK_SIZE]
+
+
+def test_a_file_replaced_mid_response_is_not_spliced_into_it(audio):
+    """Re-separation renames a new stem into place. Reopened by name for
+    each chunk, the response carried on with the new file's bytes under the
+    old file's ETag and length; it must end instead, so the client asks
+    again and If-Range decides."""
+    response = media.audio_response(audio, 'bytes=0-')
+
+    async def client_that_keeps_reading():
+        body, got = response.body_iterator, []
+        got.append(await body.__anext__())
+        replacement = audio.with_name('new.wav')
+        replacement.write_bytes(os.urandom(SIZE))
+        os.replace(replacement, audio)
+        async for chunk in body:
+            got.append(chunk)
+        return got
+
+    assert asyncio.run(client_that_keeps_reading()) == [DATA[:media.CHUNK_SIZE]]
+
+
+def test_a_file_deleted_mid_response_ends_it(audio):
+    chunks = media._read(audio, 0, SIZE)
+    assert next(chunks) == DATA[:media.CHUNK_SIZE]
+    audio.unlink()
+    assert list(chunks) == []
+
+
+@pytest.mark.parametrize('suffix,expected', [
+    ('.mp3', 'audio/mpeg'), ('.WAV', 'audio/wav'), ('.flac', 'audio/flac'),
+    ('.m4a', 'audio/mp4'), ('.opus', 'audio/ogg'), ('.aac', 'audio/aac')])
+def test_every_upload_format_gets_the_same_type_on_every_machine(tmp_path, suffix,
+                                                                expected):
+    path = tmp_path / f'song{suffix}'
+    path.write_bytes(b'\0' * 10)
+    assert media.audio_response(path).media_type == expected
 
 
 def test_range_parsing():
@@ -150,21 +182,3 @@ def test_range_parsing():
     assert media.parse_range('bytes=-3', 10) == (7, 9)
     assert media.parse_range('bytes=10-', 10) == ()
     assert media.parse_range('bytes=0-1, 4-5', 10) is None
-
-
-def test_the_library_is_used_when_it_can_do_ranges():
-    assert not media.serves_ranges('0.37.2')
-    assert not media.serves_ranges('0.38.6')
-    assert media.serves_ranges('0.39.0')
-    assert media.serves_ranges('0.41.3')
-    assert media.serves_ranges('1.7.0')
-    assert not media.serves_ranges('unknown')   # the fallback always works
-
-
-def test_seeking_works_on_the_installed_starlette(audio):
-    """Whatever Starlette is installed, the default path answers a range."""
-    app = Starlette(routes=[Route('/audio', lambda req: media.audio_response(
-        audio, req.headers.get('range')))])
-    response = _get(TestClient(app), 'bytes=100-199')
-    assert response.status_code == 206
-    assert response.content == DATA[100:200]

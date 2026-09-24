@@ -156,6 +156,13 @@ def test_parse_lrc_handles_millisecond_precision():
     assert parse_lrc('[00:12.50]Word')[0].start == pytest.approx(12.5)
 
 
+def test_parse_lrc_reads_a_one_digit_fraction_as_tenths():
+    # Divided by 100 like two digits, [00:10.5] read as 10.05 s.
+    assert parse_lrc('[00:10.5]Word')[0].start == pytest.approx(10.5)
+    assert parse_lrc('[00:10.05]Word')[0].start == pytest.approx(10.05)
+    assert parse_lrc('[00:10]Word')[0].start == pytest.approx(10.0)
+
+
 def test_parse_lrc_skips_metadata_and_empty_lines():
     lines = parse_lrc('[ti:Song]\n[ar:Someone]\n[00:05.00]\n[00:10.00]Real')
     assert len(lines) == 1 and lines[0].text == 'Real'
@@ -229,6 +236,49 @@ def test_rest_markers_do_not_shift_aligned_words():
                                                   ('three four', 5.0)]
 
 
+def test_a_bracket_spanning_lines_does_not_shift_aligned_words():
+    """Tokenised as one string, '[yeah' ... 'baby]' was stripped as a single
+    stage direction across the line break, while each line was counted on
+    its own - so every later line got its neighbour's words."""
+    from meloscribe.lyrics.align import ForcedAligner
+    from meloscribe.lyrics.service import (LyricsMode, LyricsOutcome,
+                                           LyricsService)
+
+    class FakeAligner:
+        """Tokenises the text it is given as the real one does, and times
+        one word per token."""
+        def available(self):
+            return True
+
+        def align(self, path, text):
+            return [LyricWord(w, k, k + 0.5, confidence=0.9)
+                    for k, w in enumerate(ForcedAligner._normalise(text))]
+
+    lines = parse_lrc('[00:00.00]oh [yeah\n[00:02.00]baby] come on\n'
+                      '[00:05.00]last line here')
+    outcome = LyricsOutcome(lyrics=TimedLyrics(lines=lines),
+                            mode=LyricsMode.ALIGN, tier='lrclib-synced')
+    timed = LyricsService(aligner=FakeAligner())._improve_timing(
+        'vocals.wav', outcome, None)
+    assert [[w.text for w in l.words] for l in timed.lyrics.lines] == [
+        ['oh', 'yeah'], ['baby', 'come', 'on'], ['last', 'line', 'here']]
+
+
+def test_symbols_inside_a_line_do_not_shift_aligned_words():
+    """The aligner drops '♪', a lone '-', '[Chorus]' and digits, and splits
+    'rock-n-roll'. Counting a line's words by spaces instead took the next
+    line's words for this one and lost the last line."""
+    from meloscribe.lyrics.service import _lines_from_words
+
+    lines = parse_lrc('[00:01.00]♪ one two ♪\n[00:03.00]three - four\n'
+                      '[00:05.00][Chorus] rock-n-roll\n[00:07.00]five six')
+    sung = ['one', 'two', 'three', 'four', 'rock', 'n', 'roll', 'five', 'six']
+    words = [LyricWord(w, 1.0 + k, 1.5 + k) for k, w in enumerate(sung)]
+    timed = _lines_from_words(words, lines)
+    assert [[w.text for w in l.words] for l in timed] == [
+        ['one', 'two'], ['three', 'four'], ['rock', 'n', 'roll'], ['five', 'six']]
+
+
 def test_refine_keeps_rest_marker_ends_and_recomputes_the_rest():
     lines = parse_lrc('[00:10.00]First\n[00:13.00]\n[00:20.00]Second\n'
                       '[00:24.00]Third')
@@ -272,6 +322,21 @@ def test_melisma_gives_several_notes_the_same_word():
     _attach_words(notes, [LyricWord('ah', 0.0, 0.7)])
 
     assert [n.lyric for n in notes] == ['ah', 'ah', None]
+    assert [n.word for n in notes] == [0, 0, None]
+
+
+def test_a_word_sung_again_is_a_different_word():
+    """By text alone "na na na" is one word held over three notes, and the
+    piano roll labelled only the first; the word index tells them apart."""
+    notes = [TranscribedNote(60, 0.0, 0.3, 0.9), TranscribedNote(62, 0.3, 0.6, 0.9),
+             TranscribedNote(64, 0.6, 0.9, 0.9), TranscribedNote(65, 0.9, 1.2, 0.9)]
+    _attach_words(notes, [LyricWord('na', 0.0, 0.3), LyricWord('na', 0.3, 0.6),
+                          LyricWord('na', 0.6, 1.2)])
+    assert [n.word for n in notes] == [0, 1, 2, 2]
+    assert [n.to_dict()['word'] for n in notes] == [0, 1, 2, 2]
+    # Without word timing nothing changes in what a note serialises.
+    _attach_lines(notes, [LyricLine(start=0.0, text='na na na')])
+    assert all(n.word is None and 'word' not in n.to_dict() for n in notes)
 
 
 def test_line_attachment_respects_line_ends():

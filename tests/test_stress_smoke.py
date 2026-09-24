@@ -60,6 +60,31 @@ def test_silence_fuzz_case_yields_no_notes(tmp_path):
 # Regression tests for bugs the stress run found
 # --------------------------------------------------------------------------
 
+def test_breaking_points_are_found_on_both_sides_of_the_easy_setting():
+    """register is two-sided: the easy octave sits in the middle of the list.
+    Read from the first point only, the high-register failure never showed."""
+    def rows(axis, f1s):
+        return [{'axis': axis, 'system': 'ensemble', 'label': f'p{k}', 'f1': f}
+                for k, f in enumerate(f1s)]
+    bp = stress.breaking_points(rows('register', [0.6, 1, 1, 1, 0.5, 0.3])
+                                + rows('one_sided', [1, 1, 0.8, 0.5])
+                                + rows('robust', [1, 1, 1]))
+    assert bp['register']['lt0.9'] == [('p4', 'p3'), ('p0', 'p1')]
+    assert bp['register']['lt0.7'] == [('p4', 'p3'), ('p0', 'p1')]
+    assert bp['one_sided']['lt0.9'] == [('p2', 'p1')]
+    assert bp['one_sided']['lt0.7'] == [('p3', 'p2')]
+    assert bp['robust']['lt0.9'] == [(None, 'p2')]
+
+
+def test_a_truncated_mp3_is_judged_on_what_decodes(tmp_path):
+    """Its Xing header still claims the whole song (2.9 s, of which 1.39 s
+    decodes), so judging against the header expected notes that are not in
+    the file and called a perfect transcription WRONG (F1 0.67)."""
+    rows = stress.run_fuzz_case('mp3_truncated', tmp_path, entries=('engine',),
+                                voters=FAST)
+    assert rows[0]['verdict'].startswith('ok'), rows[0]
+
+
 def test_non_finite_samples_are_repaired_not_fatal(tmp_path):
     """One NaN sample used to kill the run inside librosa.resample with
     'Audio buffer is not finite everywhere'."""
@@ -84,6 +109,23 @@ def test_engine_survives_non_finite_samples(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         notes = PitchEngine(EngineSettings(voters=FAST)).transcribe(path).notes
+    assert {57, 60, 64, 69} <= {n.midi for n in notes}
+
+
+def test_engine_survives_a_file_name_stdout_cannot_encode(tmp_path, monkeypatch):
+    """basic-pitch prints the path it reads to stdout. Redirected on Windows,
+    stdout is strict cp1252, so a song named in Chinese crashed the engine -
+    under a web server logging to a file, say, rather than the CLI, which
+    moves library output to stderr itself."""
+    import io
+    import sys
+    from meloscribe.pitch.engine import EngineSettings, PitchEngine
+    x, _ = stress._fuzz_voice()
+    path = tmp_path / 'Café del Mar – 你好.wav'
+    sf.write(str(path), x, stress.SR)
+    monkeypatch.setattr(sys, 'stdout', io.TextIOWrapper(io.BytesIO(),
+                                                        encoding='cp1252'))
+    notes = PitchEngine(EngineSettings(voters=FAST)).transcribe(path).notes
     assert {57, 60, 64, 69} <= {n.midi for n in notes}
 
 

@@ -174,17 +174,17 @@ def _lyric_sections(notes, order: List[int], lyric_lines,
     for idx in order:
         note = notes[idx]
         while (cursor + 1 < len(windows)
-               and windows[cursor + 1][0] - LINE_LEAD <= note.start):
+               and _elapsed(note.start, windows[cursor + 1][0]) <= LINE_LEAD):
             cursor += 1
         line = cursor
         # The lead is for a pickup that starts early and runs on into its
         # line. A note mostly before the line starts - the short last
         # syllable of the line before - stays with that one.
-        if (line > 0 and note.start < windows[line][0]
+        if (line > 0 and _elapsed(note.start, windows[line][0]) > 0
                 and _overlap(note, windows[line - 1])
                 > _overlap(note, windows[line])):
             line -= 1
-        if line >= 0 and note.start < windows[line][1]:
+        if line >= 0 and _elapsed(note.start, windows[line][1]) > 0:
             members[line].append(idx)
         else:
             loose.append(idx)
@@ -215,7 +215,7 @@ def _lyric_sections(notes, order: List[int], lyric_lines,
 
 
 def _overlap(note, window: Tuple[float, float]) -> float:
-    return max(0.0, min(note.end, window[1]) - max(note.start, window[0]))
+    return max(0.0, _elapsed(max(note.start, window[0]), min(note.end, window[1])))
 
 
 # --------------------------------------------------------------------------
@@ -234,7 +234,7 @@ def _phrases(notes, idxs: List[int]) -> List[List[int]]:
         return []
     phrases: List[List[int]] = [[idxs[0]]]
     for prev, idx in zip(idxs, idxs[1:]):
-        if notes[idx].start - notes[prev].end >= PHRASE_REST:
+        if _elapsed(notes[prev].end, notes[idx].start) >= PHRASE_REST:
             phrases.append([idx])
         else:
             phrases[-1].append(idx)
@@ -253,7 +253,7 @@ def _split_long(notes, phrase: List[int]) -> List[List[int]]:
     while stack:
         piece = stack.pop()
         cut = None
-        if notes[piece[-1]].end - notes[piece[0]].start > MAX_PHRASE:
+        if _elapsed(notes[piece[0]].start, notes[piece[-1]].end) > MAX_PHRASE:
             cut = _phrase_cut(notes, piece)
         if cut is None:
             out.append(piece)
@@ -274,11 +274,12 @@ def _phrase_cut(notes, piece: List[int]) -> Optional[int]:
     cuts: List[int] = []
     for k in range(1, len(piece)):
         before += sung[k - 1]
-        if before >= MIN_PHRASE_SUNG and total - before >= MIN_PHRASE_SUNG:
+        if (round(before, 6) >= MIN_PHRASE_SUNG
+                and round(total - before, 6) >= MIN_PHRASE_SUNG):
             cuts.append(k)
     if not cuts:
         return None
-    best = _widest([notes[piece[k]].start - notes[piece[k - 1]].end
+    best = _widest([_elapsed(notes[piece[k - 1]].end, notes[piece[k]].start)
                     for k in cuts],
                    [notes[piece[k]].start for k in cuts],
                    (notes[piece[0]].start + notes[piece[-1]].end) / 2)
@@ -288,8 +289,9 @@ def _phrase_cut(notes, piece: List[int]) -> Optional[int]:
 def _widest(gaps: List[float], times: List[float], middle: float) -> int:
     """Index of the longest gap, near-ties going to the one nearest `middle`."""
     longest = max(gaps)
-    return min((k for k, gap in enumerate(gaps) if gap >= longest - GAP_TIE),
-               key=lambda k: abs(times[k] - middle))
+    return min((k for k, gap in enumerate(gaps)
+                if round(longest - gap, 6) <= GAP_TIE),
+               key=lambda k: (round(abs(times[k] - middle), 6), k))
 
 
 def _phrase_section(notes, idxs: List[int], kind: str) -> Section:
@@ -299,7 +301,10 @@ def _phrase_section(notes, idxs: List[int], kind: str) -> Section:
 
 
 def _sung(notes, section: Section) -> float:
-    return sum(notes[i].end - notes[i].start for i in section.note_indices)
+    # Rounded like _elapsed: two 0.3s notes must make exactly the 0.6s of
+    # MIN_PHRASE_SUNG, not a hair either side of it.
+    return round(sum(notes[i].end - notes[i].start
+                     for i in section.note_indices), 6)
 
 
 def _absorb_fragments(notes, sections: List[Section],
@@ -338,10 +343,17 @@ def _absorb_target(sections: List[Section], i: int) -> Optional[int]:
     section = sections[i]
     neighbours = []
     if i > 0:
-        neighbours.append((section.start - sections[i - 1].end, i - 1))
+        neighbours.append((_elapsed(sections[i - 1].end, section.start), i - 1))
     if i + 1 < len(sections):
-        neighbours.append((sections[i + 1].start - section.end, i + 1))
-    for gap, target in sorted(neighbours):
+        neighbours.append((_elapsed(section.end, sections[i + 1].start), i + 1))
+    # Nearest first. Gaps on the 10ms grid tie often, and before they were
+    # rounded float noise broke the ties - whether strays in a break stayed
+    # a break or ran into the verse was luck. So on a tie: not a lyric line
+    # (strays keep together instead of stretching a sung line across the
+    # break), then the later neighbour, as a pickup belongs to what follows.
+    for gap, _, _, target in sorted(
+            (gap, sections[target].kind == 'lyric', -target, target)
+            for gap, target in neighbours):
         host = sections[target]
         if gap > PHRASE_REST * 3:
             return None
@@ -350,9 +362,9 @@ def _absorb_target(sections: List[Section], i: int) -> Optional[int]:
         # earlier merges moved it, or strays filling a break chain into the
         # verse and it seems to begin seconds before its first word.
         if (target > i and host.kind == 'lyric' and host.lines
-                and host.lines[0][0] - section.start > PHRASE_REST * 3):
+                and _elapsed(section.start, host.lines[0][0]) > PHRASE_REST * 3):
             continue
-        span = max(host.end, section.end) - min(host.start, section.start)
+        span = _elapsed(min(host.start, section.start), max(host.end, section.end))
         if span <= MAX_PHRASE:
             return target
     return None
@@ -384,7 +396,7 @@ def _group_parts(notes, lines: List[Section]) -> List[Section]:
     else:
         cuts = {0}
         for i in range(1, len(lines)):
-            if lines[i].start - lines[i - 1].end >= PART_BREAK:
+            if _elapsed(lines[i - 1].end, lines[i].start) >= PART_BREAK:
                 cuts.add(i)
     cuts = _split_long_parts(lines, sorted(c for c in cuts if c < len(lines)))
 
@@ -424,14 +436,18 @@ def _lyric_part_cuts(notes, lines: List[Section], lyric: List[int]) -> Set[int]:
     a stop.
     """
     starts = {b for a, b in zip(lyric, lyric[1:])
-              if lines[b].start - lines[a].end >= PART_BREAK}
+              if _elapsed(lines[a].end, lines[b].start) >= PART_BREAK}
     # Repeated blocks of lyric are structure: each occurrence of a repeated
     # run of lines starts a part, and the line after it starts the next one.
     # The runs are of lyric lines only, so a wordless section inside a block
-    # (a held last syllable, an ad-lib) cannot break it.
+    # (a held last syllable, an ad-lib) cannot break it. A line sung again
+    # straight after itself counts once: 'na na na' eight times over is one
+    # line held, not a block repeating itself.
     texts = [_normalise(lines[i].text) for i in lyric]
-    for a, b, length in _repeated_runs(texts):
-        for k in (a, a + length, b, b + length):
+    heads = [k for k in range(len(texts)) if k == 0 or texts[k] != texts[k - 1]]
+    for a, b, length in _repeated_runs([texts[k] for k in heads]):
+        for g in (a, a + length, b, b + length):
+            k = heads[g] if g < len(heads) else len(lyric)
             if 0 < k < len(lyric):
                 starts.add(lyric[k])
 
@@ -444,7 +460,7 @@ def _lyric_part_cuts(notes, lines: List[Section], lyric: List[int]) -> Set[int]:
         cuts.add(following)
         tail = last
         while (tail + 1 < following
-               and lines[tail + 1].start - lines[tail].end < PHRASE_REST):
+               and _elapsed(lines[tail].end, lines[tail + 1].start) < PHRASE_REST):
             tail += 1
         rest = range(tail + 1, following)
         if sum(_sung(notes, lines[i]) for i in rest) >= MIN_PHRASE_SUNG:
@@ -463,9 +479,10 @@ def _split_long_parts(lines: List[Section], cuts: List[int]) -> List[int]:
     stack = [(bounds[i], bounds[i + 1]) for i in range(len(cuts))][::-1]
     while stack:
         a, b = stack.pop()
-        if b - a >= 2 and lines[b - 1].end - lines[a].start > MAX_PART:
+        if b - a >= 2 and _elapsed(lines[a].start, lines[b - 1].end) > MAX_PART:
             inner = range(a + 1, b)
-            k = inner[_widest([lines[j].start - lines[j - 1].end for j in inner],
+            k = inner[_widest([_elapsed(lines[j - 1].end, lines[j].start)
+                               for j in inner],
                               [lines[j].start for j in inner],
                               (lines[a].start + lines[b - 1].end) / 2)]
             stack.extend([(k, b), (a, k)])
@@ -474,29 +491,58 @@ def _split_long_parts(lines: List[Section], cuts: List[int]) -> List[int]:
     return out
 
 
-def _repeated_runs(texts: List[Optional[str]]) -> List[Tuple[int, int, int]]:
-    """Maximal runs of at least MIN_REPEAT_LINES lines that occur twice.
+def _repeated_runs(texts: List[str]) -> List[Tuple[int, int, int]]:
+    """The outermost maximal runs of at least MIN_REPEAT_LINES lines that
+    occur twice, as (first start, second start, length).
 
-    Returns (first start, second start, length). Runs never overlap their own
-    repeat, so four identical lines in a row are not mistaken for a block
-    repeating itself.
+    A run never overlaps its own repeat. The caller collapses a line repeated
+    straight after itself, since 'la la la la' would otherwise be found as a
+    block ('la la') repeating itself.
+
+    The halves of a repeated block repeat too: 'A B A B C' sung twice also
+    holds 'A B' four times, and each of those would cut the chorus. So a run
+    whose two occurrences both lie inside occurrences of longer runs is not
+    structure of its own, and is left out.
     """
     runs = []
     n = len(texts)
     for a in range(n):
         for b in range(a + 1, n):
-            if texts[a] is None or texts[a] != texts[b]:
+            if texts[a] != texts[b]:
                 continue
-            if a > 0 and texts[a - 1] is not None and texts[a - 1] == texts[b - 1]:
+            if a > 0 and texts[a - 1] == texts[b - 1]:
                 continue  # not the start of a maximal run
             length = 0
             while (b + length < n and a + length < b
-                   and texts[a + length] is not None
                    and texts[a + length] == texts[b + length]):
                 length += 1
             if length >= MIN_REPEAT_LINES:
                 runs.append((a, b, length))
-    return runs
+
+    outermost = []
+    longer: List[Tuple[int, int]] = []   # occurrences of runs longer than this
+    for length in sorted({r[2] for r in runs}, reverse=True):
+        # reach[s]: how far the longer occurrences starting at or before s go.
+        reach = [0] * (n + 1)
+        for start, end in longer:
+            reach[start] = max(reach[start], end)
+        for s in range(1, n + 1):
+            reach[s] = max(reach[s], reach[s - 1])
+        group = [r for r in runs if r[2] == length]
+        outermost += [(a, b, length) for a, b, _ in group
+                      if reach[a] < a + length or reach[b] < b + length]
+        longer += [(s, s + length) for a, b, _ in group for s in (a, b)]
+    return outermost
+
+
+def _elapsed(start: float, end: float) -> float:
+    """end - start, to the microsecond, for comparing with the thresholds.
+
+    Note times are frame times (k * 10ms), and in floating point a rest of
+    exactly 45 frames often came out as 0.44999999999999996: most such rests
+    did not end their phrase, and a 250-frame break often missed PART_BREAK.
+    """
+    return round(end - start, 6)
 
 
 def _normalise(text: str) -> str:

@@ -474,8 +474,10 @@ async function sendFile(file) {
       $('artist').value = upload.suggested.artist_name;
     validate();
   } catch (err) {
+    // Escaped: the server's reason repeats the file's extension, and a file
+    // named 'x.<img src=x onerror=...>' would otherwise run it.
     $('drop').innerHTML = `<strong style="color:var(--err)">Upload failed</strong>
-      <br><span class="meta">${err.message}</span>`;
+      <br><span class="meta">${escapeHtml(err.message)}</span>`;
   }
 }
 
@@ -770,6 +772,9 @@ function renderSection() {
   const list = sections(), s = list[secIdx];
   if (s) {
     $('sectionSlider').value = secIdx;
+    // Read out as the section, not as the slider's 0-based index.
+    $('sectionSlider').setAttribute('aria-valuetext',
+                                    `${s.label}, ${secIdx + 1} of ${list.length}`);
     $('sectionPos').textContent = `${secIdx + 1} / ${list.length}`;
     $('sectionLabel').textContent = s.label;
     $('sectionText').textContent = s.text ? '— ' + s.text
@@ -998,11 +1003,21 @@ $('loopBox').onchange = e => { if (playing) playing.loop = e.target.checked; };
   if (playing && playing.only === null) playSection(clockTime(playing));
 }));
 
-// A clicked button keeps focus, and a focused button takes Space for itself,
-// so after clicking › the next Space would step again instead of playing. A
-// mouse click lets go of focus; a keyboard press (detail 0) leaves it be.
-['prevSec', 'nextSec', 'grainLine', 'grainPart', 'playBtn'].forEach(id =>
-  $(id).addEventListener('click', e => { if (e.detail) e.currentTarget.blur(); }));
+// A clicked control keeps focus, and a focused control takes Space (a button,
+// a checkbox) or the arrows (a select) for itself: after clicking ›, Loop,
+// Speed or a download, the next Space or arrow worked that control instead of
+// playing or stepping. Picked with the pointer, a control lets go of focus;
+// reached with the keyboard it keeps it, and its keys. (A click's `detail`
+// cannot tell them apart: a checkbox clicked through its label gets 0.)
+let pointerInput = false;
+document.addEventListener('pointerdown', () => { pointerInput = true; }, true);
+document.addEventListener('keydown', () => { pointerInput = false; }, true);
+const letGoIfPointer = e => { if (pointerInput) e.currentTarget.blur(); };
+['prevSec', 'nextSec', 'grainLine', 'grainPart', 'playBtn', 'loopBox', 'overlayBox']
+  .forEach(id => $(id).addEventListener('click', letGoIfPointer));
+['sourceSel', 'rateSel'].forEach(id => $(id).addEventListener('change', letGoIfPointer));
+document.querySelectorAll('[data-dl]').forEach(btn =>
+  btn.addEventListener('click', letGoIfPointer));
 
 document.addEventListener('keydown', e => {
   if (!data || $('resultPanel').classList.contains('hidden')) return;
@@ -1239,11 +1254,14 @@ function drawSection(playhead) {
       ctx.fillText(label, rx + 3, ry + barH / 2);
     }
     // Word-level lyrics: each word once, under the first note that sings it.
-    if (data.word_level && members.has(i) && n.lyric && n.lyric !== lastWord) {
+    // Told apart by the aligner's word index, not the text, or "na na na"
+    // would show a single "na" (older results have no index: text, then).
+    const word = n.word ?? n.lyric;
+    if (data.word_level && members.has(i) && n.lyric && word !== lastWord) {
       ctx.fillStyle = c.muted;
       ctx.fillText(n.lyric, rx, Math.min(height - bottom - 6, ry + barH + 8));
     }
-    lastWord = n.lyric;
+    lastWord = word;
     rects.push({ i, x: rx, y: ry, w: rw, h: barH });
   }
 

@@ -726,19 +726,37 @@ def _f(x, nd=3):
 
 
 def breaking_points(rows: List[Dict], system: str = 'ensemble') -> Dict[str, Dict]:
+    """Per axis, where F1 first drops below 0.9 and below 0.7: a list of
+    (first failing point, last good one) - (None, last point) if it never
+    drops - for each direction away from the axis's best point.
+
+    Walked outward from the best-scoring point both ways: most axes run easy
+    -> extreme, but register, detune and sample rate are two-sided - the easy
+    setting sits inside the list, and they can fail in both directions. Read
+    from the first point only, the far side's failure went unreported.
+    """
     out: Dict[str, Dict] = {}
     for axis in dict.fromkeys(r['axis'] for r in rows):
         pts = [r for r in rows if r['axis'] == axis and r['system'] == system]
         if not pts:
             continue
+        best = max(range(len(pts)), key=lambda k: pts[k]['f1'])
 
         def first_below(th):
-            prev = None
-            for p in pts:
-                if p['f1'] < th:
-                    return p['label'], (prev['label'] if prev else None)
-                prev = p
-            return None, pts[-1]['label']
+            if pts[best]['f1'] < th:
+                return [(pts[best]['label'], None)]
+            found = []
+            for side in (range(best + 1, len(pts)), range(best - 1, -1, -1)):
+                ok = pts[best]['label']
+                for k in side:
+                    if pts[k]['f1'] < th:
+                        found.append((pts[k]['label'], ok))
+                        break
+                    ok = pts[k]['label']
+                else:
+                    if len(side):
+                        found.append((None, ok))
+            return found or [(None, pts[best]['label'])]
         out[axis] = {'lt0.9': first_below(0.9), 'lt0.7': first_below(0.7),
                      'range': f"{pts[0]['label']} -> {pts[-1]['label']}"}
     return out
@@ -758,8 +776,8 @@ def sweep_markdown(rows: List[Dict]) -> str:
     bp = {s: breaking_points(rows, s) for s in ENGINE_SYSTEMS}
 
     def fmt(entry):
-        (hit, last) = entry
-        return f"**{hit}** (ok at {last})" if hit else f"never (ok to {last})"
+        return '; '.join(f"**{hit}** (ok at {last})" if hit else
+                         f"never (ok to {last})" for hit, last in entry)
     for axis, e in bp['ensemble'].items():
         extra = [fmt(bp[s][axis]['lt0.9']) if axis in bp[s] else '-'
                  for s in ('crepe', 'basic_pitch')]
@@ -1006,7 +1024,12 @@ def run_fuzz_case(name: str, out_dir: Path, entries: Sequence[str] = ENTRIES,
     if expect == 'first_half':
         import soundfile as sf
         try:
-            cut_s = sf.info(str(path)).duration
+            # What decodes, not what the header claims: a truncated MP3's
+            # Xing header still gives the whole song's length (2.9 s of which
+            # 1.39 s decodes), and judging against that marked a perfect
+            # transcription of what is there as WRONG.
+            samples, sr = sf.read(str(path))
+            cut_s = len(samples) / sr
         except Exception:
             cut_s = 1.3
     rows = []

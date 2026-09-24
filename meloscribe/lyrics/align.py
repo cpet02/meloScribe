@@ -133,9 +133,10 @@ def _stamp_seconds(stamp: 're.Match') -> float:
     minutes = int(stamp.group(1))
     seconds = int(stamp.group(2))
     fraction = stamp.group(3) or '0'
-    # Two digits are hundredths, three are milliseconds.
-    divisor = 100.0 if len(fraction) <= 2 else 1000.0
-    return minutes * 60 + seconds + int(fraction) / divisor
+    # A decimal fraction, however many digits: .5 tenths, .50 hundredths,
+    # .500 milliseconds. (Two digits or fewer used to mean hundredths, so
+    # [00:10.5] read as 10.05 s.)
+    return minutes * 60 + seconds + int(fraction) / 10 ** len(fraction)
 
 
 def parse_plain(content: str, duration: float) -> List[LyricLine]:
@@ -364,6 +365,7 @@ def _attach_words(notes: Sequence, words: Sequence[LyricWord]) -> None:
     if not words:
         for note in notes:
             note.lyric = None
+            note.word = None
         return
 
     starts = np.array([w.start for w in words])
@@ -375,14 +377,18 @@ def _attach_words(notes: Sequence, words: Sequence[LyricWord]) -> None:
         if overlap[best] > 0:
             note.lyric = words[best].text
             note.syllable = words[best].text
+            note.word = best
         else:
             # No overlap: a sung note between words (a hum, or a held vowel
             # past the word boundary). Left unlabelled rather than guessed.
             note.lyric = None
             note.syllable = None
+            note.word = None
 
 
 def _attach_lines(notes: Sequence, lines: Sequence[LyricLine]) -> None:
+    for note in notes:
+        note.word = None    # line-level lyrics name no single word
     if not lines:
         for note in notes:
             note.lyric = None
