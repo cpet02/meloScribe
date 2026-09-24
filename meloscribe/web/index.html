@@ -772,6 +772,9 @@ function renderSection() {
   const list = sections(), s = list[secIdx];
   if (s) {
     $('sectionSlider').value = secIdx;
+    // Read out as the section, not as the slider's 0-based index.
+    $('sectionSlider').setAttribute('aria-valuetext',
+                                    `${s.label}, ${secIdx + 1} of ${list.length}`);
     $('sectionPos').textContent = `${secIdx + 1} / ${list.length}`;
     $('sectionLabel').textContent = s.label;
     $('sectionText').textContent = s.text ? '— ' + s.text
