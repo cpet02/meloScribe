@@ -474,8 +474,10 @@ async function sendFile(file) {
       $('artist').value = upload.suggested.artist_name;
     validate();
   } catch (err) {
+    // Escaped: the server's reason repeats the file's extension, and a file
+    // named 'x.<img src=x onerror=...>' would otherwise run it.
     $('drop').innerHTML = `<strong style="color:var(--err)">Upload failed</strong>
-      <br><span class="meta">${err.message}</span>`;
+      <br><span class="meta">${escapeHtml(err.message)}</span>`;
   }
 }
 
