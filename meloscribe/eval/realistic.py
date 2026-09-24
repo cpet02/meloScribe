@@ -1298,7 +1298,11 @@ def generate_case(case: Dict, data_dir: Path, bank: Optional[VoiceBank] = None,
     truth_path = case_dir / 'truth.json'
     if truth_path.exists() and not force:
         cached = Truth.load(truth_path)
-        if cached.version == GENERATOR_VERSION and cached.case == json.loads(json.dumps(case)):
+        # Sung by another voice - say the formant fallback, before the real
+        # voice was installed - it is stale, or it would stand in for it.
+        same_voice = bank is None or cached.source == bank.source
+        if (cached.version == GENERATOR_VERSION and same_voice
+                and cached.case == json.loads(json.dumps(case))):
             if cached.notes and not cached.note_info:
                 # Written before annotations existed: re-sing the lead only
                 # (deterministic) to recover them, leaving the audio alone.

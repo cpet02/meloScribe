@@ -53,6 +53,21 @@ def test_oracle_scores_one(smoke):
     assert row['errors'] == {}
 
 
+def test_a_case_made_with_another_voice_is_regenerated(tmp_path):
+    """Generated with the formant fallback, then the real voice turns up:
+    the cached case must not keep standing in for it."""
+    from dataclasses import replace
+
+    formant = R.formant_bank()
+    first = R.generate_case(R.SMOKE_CASE, tmp_path, bank=formant)
+    stamp = (first.case_dir / 'truth.json').stat().st_mtime_ns
+    again = R.generate_case(R.SMOKE_CASE, tmp_path, bank=formant)
+    assert (again.case_dir / 'truth.json').stat().st_mtime_ns == stamp
+    other = R.generate_case(R.SMOKE_CASE, tmp_path,
+                            bank=replace(formant, source='arctic_a0007.wav'))
+    assert other.source == 'arctic_a0007.wav'
+
+
 def test_truth_f0_is_what_was_sung(smoke):
     """WORLD must reproduce the imposed f0, or the truth is fiction."""
     import librosa
