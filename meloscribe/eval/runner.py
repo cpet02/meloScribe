@@ -47,8 +47,6 @@ def load_dataset(path) -> List[GroundTruth]:
 
     truths: List[GroundTruth] = []
     for csv_path in sorted(path.rglob('*.csv')):
-        if is_auxiliary(csv_path):
-            continue  # x.notes.csv and the like annotate track x
         audio = None
         for ext in AUDIO_EXTENSIONS:
             candidate = csv_path.with_suffix(ext)
@@ -56,7 +54,10 @@ def load_dataset(path) -> List[GroundTruth]:
                 audio = candidate
                 break
         if audio is None:
-            print(f"  skipping {csv_path.name}: no matching audio file")
+            # x.notes.csv and the like annotate track x. Asked only once no
+            # audio matches, since a track's own name may contain a dot.
+            if not is_auxiliary(csv_path):
+                print(f"  skipping {csv_path.name}: no matching audio file")
             continue
         truth = load_csv_f0(csv_path, name=csv_path.stem, audio_path=audio)
         notes_path = notes_path_for(csv_path)

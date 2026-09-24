@@ -56,6 +56,20 @@ def test_load_dataset_attaches_reference_notes(tmp_path):
     assert [(n.onset, n.offset, n.midi) for n in truths[0].notes] == [(0.0, 0.3, 69.0)]
 
 
+def test_load_dataset_keeps_tracks_with_dots_in_their_names(tmp_path):
+    # A hand-made folder: the dot is part of the track's name, not a sign
+    # that the CSV annotates some other track.
+    for name in ('01. Intro', 'take 1.5'):
+        _wav(tmp_path / f'{name}.wav')
+        (tmp_path / f'{name}.csv').write_text('0.00,0\n0.01,440\n')
+    write_notes_csv(tmp_path / '01. Intro.notes.csv', [Note(0.0, 0.3, 69.0)])
+
+    truths = load_dataset(tmp_path)
+
+    assert [t.name for t in truths] == ['01. Intro', 'take 1.5']
+    assert [(n.onset, n.offset, n.midi) for n in truths[0].notes] == [(0.0, 0.3, 69.0)]
+
+
 def test_vocadito_notes_are_onset_hz_duration(tmp_path):
     src = tmp_path / 'vocadito'
     _wav(src / 'Audio' / 'vocadito_3.wav')
