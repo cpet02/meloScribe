@@ -343,6 +343,10 @@ def test_uncertain_key_spells_the_same_pitches_with_sharps(tmp_path,
     assert [n.midi for n in output.notes] == [n.midi for n in trusted.notes]
     assert [n.name for n in output.notes] == ['D#5', 'G#5', 'A#5']
     assert (output.spelling, output.pitch_names) == ('sharp', SHARPS)
+    # Nor is a written key named: sharps under "written: Eb major" would
+    # contradict it, as would the sheet music, which shows no signature.
+    assert output.written_key is None
+    assert output.to_dict()['written_key'] is None
     assert any('spelling notes with sharps' in w for w in output.warnings)
 
 
