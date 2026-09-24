@@ -27,6 +27,8 @@ pretty_midi           # MIDI export
 # --- evaluation -------------------------------------------------------------
 mir_eval              # melody and transcription metrics
 pytest
+# music21             # reads the MusicXML export back in tests/test_notation.py;
+#                     # without it those 25 tests skip (in `pip install -e ".[dev]"`)
 
 # --- optional, but each one measurably improves results ---------------------
 # torchcrepe          # the strongest pitch voter; needs torch
