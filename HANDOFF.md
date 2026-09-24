@@ -18,18 +18,17 @@ files open, which broke re-separation on Windows while a stem was playing;
 CLI output is UTF-8 when redirected; sections compare times to the
 microsecond (a nanosecond of jitter regrouped half of random layouts) and
 treat a repeated line or a chorus's repeated halves as one unit; keyboard
-focus after mouse clicks in the UI; Cb in six-flat keys; and fixes to the
-stress fuzzer, `realistic score --resume` and forced-alignment line timing.
+focus after mouse clicks in the UI; Cb in six-flat keys; repeated words
+labelled on the zoomed roll (notes carry the aligned word's index, `word`);
+TONAS note pitches no longer get the tuning twice (checked against the f0 on
+conversion); and fixes to the stress fuzzer and sweep summary, `realistic
+score --resume` and forced-alignment line timing. `music21` is installed
+here now: the 25 MusicXML read-back tests run, and pass.
 
 Still open after it:
-- Repeated words show once on the zoomed roll: labels are de-duplicated by
-  text, and telling "na na na" apart needs a word index in the note payload.
-- `stress` sweep summaries (`breaking_points`) read each axis from one end,
-  so two-sided axes (register, detune, sample rate) report one side only.
-- `music21` is in the dev extra but not installed here, so the 25 MusicXML
-  read-back tests in `tests/test_notation.py` have never run on this machine.
-- The TONAS converter adds the file's tuning offset to note pitches; that
-  reading was not checked against the TONAS documentation.
+- TONAS: the tuning reading rests on mirdata's sample file and its f0, not
+  the dataset's documentation (unreachable). If conversion warns that notes
+  sit tens of cents off the f0, the convention is the other one.
 - By hand in a browser: "Notes on top" against the singer at 0.75x and 0.5x
   (VBR MP3 seeking), the first Play in Safari/Firefox, lyric-line sections on
   a real song with synced lyrics (the only local sample is an instrumental).
