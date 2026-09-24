@@ -9,6 +9,7 @@ job store, and serialises what the pipeline returns.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -42,6 +43,10 @@ WEB_DIR = Path(__file__).resolve().parent.parent / 'web'
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 ALLOWED_SUFFIXES = {'.mp3', '.wav', '.flac', '.m4a', '.ogg', '.opus', '.aac'}
 
+# What /api/upload names a stored file: 12 hex digits and the file's suffix.
+UPLOAD_ID = re.compile(r'[0-9a-f]{12}(?:%s)'
+                       % '|'.join(re.escape(s) for s in sorted(ALLOWED_SUFFIXES)))
+
 app = FastAPI(title='meloScribe', version=__version__)
 
 # The UI is served from this same origin, but a permissive policy keeps a
@@ -74,8 +79,15 @@ class JobRequest(BaseModel):
 def _upload_path(upload_id: str) -> Path:
     """Resolve an upload id to a path, refusing anything that escapes the
     upload directory."""
-    # Traversal guard: an id like '../../etc/passwd' must not resolve outside
-    # UPLOAD_DIR, even though ids are server-generated today.
+    # Only ids of the form /api/upload generates are looked up at all. Even
+    # resolving a path is not harmless on Windows: 'CON' or 'NUL.mp3' names a
+    # device that "exists" (reading it blocks the single worker for good), and
+    # resolving '\\host\share\x.wav' opens an SMB connection to that host
+    # before any check below could refuse it.
+    if not UPLOAD_ID.fullmatch(upload_id):
+        raise HTTPException(status_code=400, detail='Invalid upload id')
+    # Traversal guard, kept behind the pattern as a second line of defence: an
+    # id like '../../etc/passwd' must not resolve outside UPLOAD_DIR.
     candidate = (UPLOAD_DIR / upload_id).resolve()
     # A parent check, not a string prefix: '../uploads_private/x' shares the
     # prefix, and '' resolves to the directory itself. Uploads are stored flat,

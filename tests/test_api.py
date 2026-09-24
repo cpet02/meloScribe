@@ -111,9 +111,29 @@ def test_no_lyrics_bypasses_the_name_requirement(clip):
 
 
 def test_unknown_upload_id_is_404():
-    response = client.post('/api/jobs', json={'upload_id': 'nope.mp3',
+    response = client.post('/api/jobs', json={'upload_id': '0123456789ab.mp3',
                                               'lyrics_mode': 'off'})
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize('upload_id', [
+    'CON', 'con.wav', 'NUL.mp3', 'CONIN$', r'\\host\share\x.wav',
+    '//host/share/x.wav', 'nope.mp3', '0123456789ab.exe', '0123456789AB.wav',
+    '0123456789ab.wav ', '0123456789ab.wav/..'])
+def test_malformed_upload_ids_never_reach_the_filesystem(upload_id, monkeypatch):
+    """On Windows 'CON' or 'NUL.mp3' is a device that "exists" - reading it
+    blocks the only worker for good - and resolving '\\\\host\\share' opens an
+    SMB connection. Only ids shaped like the ones /api/upload hands out are
+    looked up at all."""
+    import pathlib
+    resolved = []
+    real = pathlib.Path.resolve
+    monkeypatch.setattr(pathlib.Path, 'resolve',
+                        lambda self, *a, **k: resolved.append(self) or real(self, *a, **k))
+    response = client.post('/api/jobs',
+                           json={'upload_id': upload_id, 'lyrics_mode': 'off'})
+    assert response.status_code == 400
+    assert resolved == []
 
 
 def test_path_traversal_upload_id_is_rejected():
@@ -227,6 +247,7 @@ def test_unknown_download_format_is_rejected(clip):
 # separation - only the API's own handling of a finished result.
 
 SONG = bytes(range(256)) * 400
+UPLOAD_ID = '0123456789ab.wav'    # shaped like the ids /api/upload hands out
 
 
 @pytest.fixture
@@ -240,7 +261,7 @@ def uploads(tmp_path, monkeypatch):
 
 def _inject_job(uploads, vocals=None, vocals_only=False, transpose=0,
                 status=JobStatus.DONE):
-    (uploads / 'song.wav').write_bytes(SONG)
+    (uploads / UPLOAD_ID).write_bytes(SONG)
     notes = [TranscribedNote(60, 10.2, 10.6, 0.9),
              TranscribedNote(62, 11.0, 11.5, 0.9),
              TranscribedNote(64, 14.1, 14.5, 0.9),
@@ -255,7 +276,7 @@ def _inject_job(uploads, vocals=None, vocals_only=False, transpose=0,
         result.stems = StemResult(stems={'vocals': vocals}, model='test',
                                   device='cpu', cached=True)
     job = app_module.jobs.create(filename='song.wav', params={
-        'upload_id': 'song.wav', 'transpose': transpose,
+        'upload_id': UPLOAD_ID, 'transpose': transpose,
         'vocals_only': vocals_only})
     job.result = result
     job.status = status
