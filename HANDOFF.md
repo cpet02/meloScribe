@@ -542,8 +542,8 @@ Decisions:
 
 Known gaps: swing comes out literally (quarter-eighth triplets), not as
 "swing 8ths"; the tracked-grid losses (ties/dotted cases) are drift at the
-tail of a short clip, not the quantiser; key.py names Gb major's fourth `B`,
-so it prints as B natural under a six-flat signature.
+tail of a short clip, not the quantiser. (Six-flat keys - Gb major, Eb minor -
+now write their Cb as Cb, not B natural.)
 
 ## Working agreements
 
