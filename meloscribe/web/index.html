@@ -566,6 +566,10 @@ $('runBtn').onclick = async () => {
     if (!res.ok) throw new Error((await res.json()).detail);
     jobId = (await res.json()).id;
     $('cancelBtn').classList.remove('hidden');
+    // Run can be pressed again mid-job (validate() re-enables it). A second
+    // timer left running would reload the result - and reset the section
+    // slider and its playback - on every tick.
+    clearInterval(poller);
     poller = setInterval(poll, 700);
   } catch (err) {
     showError(err.message);
@@ -579,7 +583,10 @@ $('cancelBtn').onclick = async () => {
 
 async function poll() {
   if (!jobId) return;
-  const job = await (await fetch('/api/jobs/' + jobId)).json();
+  const id = jobId;
+  const job = await (await fetch('/api/jobs/' + id)).json();
+  // A newer job started while this request was out; its own polls report it.
+  if (id !== jobId) return;
   $('barFill').style.width = (job.progress * 100) + '%';
   $('progressMsg').textContent = job.message;
   $('progressPct').textContent = Math.round(job.progress * 100) + '%';
