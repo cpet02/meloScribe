@@ -349,15 +349,29 @@ class CrepeVoter(Voter):
         # Map CREPE's bins onto our semitone grid, taking the strongest bin
         # within each semitone rather than the mean: averaging across the 5
         # bins of a semitone would blur a confident peak into its neighbours.
-        bin_hz = torchcrepe.convert.bins_to_frequency(
-            torch.arange(activation.shape[1])).numpy()
-        bin_midi = 69.0 + 12.0 * np.log2(np.maximum(bin_hz, 1e-6) / 440.0)
+        #
+        # Which bins fall inside a semitone is asked of the library in the
+        # direction that does not dither. `bins_to_frequency` adds up to +/-20
+        # cents of random triangular noise on every call - torchcrepe dithers
+        # its pitch *output* to hide quantisation - so the bin-to-semitone map
+        # used to be redrawn on every run, reassigning each semitone's edge
+        # bin about a third of the time. Measured: two identical benchmark
+        # runs differed by 0.003 RPA on scale_scooped. `frequency_to_bins`
+        # uses the same base constant with no noise.
+        edges = torch.tensor(440.0 * 2.0 ** ((PITCHES - 69.0) / 12.0),
+                             dtype=torch.float64)[:, None] * torch.tensor(
+            [2.0 ** (-0.5 / 12.0), 2.0 ** (0.5 / 12.0)], dtype=torch.float64)
+        first = torchcrepe.convert.frequency_to_bins(
+            edges[:, 0], quantize_fn=torch.ceil).numpy()
+        last = torchcrepe.convert.frequency_to_bins(
+            edges[:, 1], quantize_fn=torch.floor).numpy()
 
+        n_bins = activation.shape[1]
         salience = np.zeros((activation.shape[0], N_PITCHES), dtype=np.float32)
-        for p, midi in enumerate(PITCHES):
-            mask = np.abs(bin_midi - midi) <= 0.5
-            if np.any(mask):
-                salience[:, p] = activation[:, mask].max(axis=1)
+        for p in range(N_PITCHES):
+            lo, hi = max(int(first[p]), 0), min(int(last[p]), n_bins - 1)
+            if lo <= hi:
+                salience[:, p] = activation[:, lo:hi + 1].max(axis=1)
 
         # CREPE's periodicity: the max activation, which is its confidence
         # that a periodic signal is present at all.

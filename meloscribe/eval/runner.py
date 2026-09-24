@@ -2,6 +2,7 @@
 
     python -m meloscribe.eval.runner --systems basic_pitch,pyin
     python -m meloscribe.eval.runner --systems oracle          # harness self-test
+    python -m meloscribe.eval.runner --systems ensemble --suite hard
     python -m meloscribe.eval.runner --dataset data/vocadito --systems basic_pitch
 
 Results are written to JSON so runs can be diffed: `--baseline` prints the
@@ -149,6 +150,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help='Where synthetic benchmark audio is rendered')
     parser.add_argument('--rebuild-synth', action='store_true',
                         help='Re-render synthetic audio even if it exists')
+    parser.add_argument('--suite', default='core',
+                        choices=('core', 'hard', 'all'),
+                        help="Synthetic case set: 'core' is the headline "
+                             "benchmark every earlier number was measured on; "
+                             "'hard' adds backing-vocal and drum bleed, "
+                             "portamento and creaky onsets (default: core)")
     parser.add_argument('--tracks', help='Comma-separated track names to limit the run to')
     parser.add_argument('--output', help='Write results JSON here')
     parser.add_argument('--baseline', help='Compare against a previous results JSON')
@@ -164,9 +171,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Loading dataset: {args.dataset}")
         truths = load_dataset(args.dataset)
     else:
-        from .synth import build_dataset
-        print(f"Building synthetic benchmark in {args.synth_dir}")
-        truths = build_dataset(args.synth_dir, force=args.rebuild_synth)
+        from .synth import SUITES, build_dataset
+        print(f"Building synthetic benchmark ({args.suite}) in {args.synth_dir}")
+        truths = build_dataset(args.synth_dir, cases=SUITES[args.suite],
+                               force=args.rebuild_synth)
 
     if args.tracks:
         wanted = {t.strip() for t in args.tracks.split(',')}

@@ -13,10 +13,12 @@ starts, not after.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 from pathlib import Path
 from typing import List, Optional
 
+from .audio import AudioLoadError
 from .lyrics.service import LyricsMode, MissingTrackName
 from .output import (FORMATS, musicxml_for_output, render, score_for_output,
                      write_midi)
@@ -135,11 +137,15 @@ def main(argv: Optional[List[str]] = None) -> int:
               f"lyrics: {mode.value}", file=sys.stderr)
 
     try:
-        output = Pipeline().run(request, progress=progress)
+        # stdout is reserved for the rendered result. Libraries print progress
+        # there (basic-pitch: "Predicting MIDI for ..."), which made
+        # `--format json > notes.json` write invalid JSON.
+        with contextlib.redirect_stdout(sys.stderr):
+            output = Pipeline().run(request, progress=progress)
     except MissingTrackName as exc:
         print(f"\nerror: {exc}", file=sys.stderr)
         return 2
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, AudioLoadError) as exc:
         print(f"\nerror: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
