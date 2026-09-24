@@ -998,11 +998,21 @@ $('loopBox').onchange = e => { if (playing) playing.loop = e.target.checked; };
   if (playing && playing.only === null) playSection(clockTime(playing));
 }));
 
-// A clicked button keeps focus, and a focused button takes Space for itself,
-// so after clicking › the next Space would step again instead of playing. A
-// mouse click lets go of focus; a keyboard press (detail 0) leaves it be.
-['prevSec', 'nextSec', 'grainLine', 'grainPart', 'playBtn'].forEach(id =>
-  $(id).addEventListener('click', e => { if (e.detail) e.currentTarget.blur(); }));
+// A clicked control keeps focus, and a focused control takes Space (a button,
+// a checkbox) or the arrows (a select) for itself: after clicking ›, Loop,
+// Speed or a download, the next Space or arrow worked that control instead of
+// playing or stepping. Picked with the pointer, a control lets go of focus;
+// reached with the keyboard it keeps it, and its keys. (A click's `detail`
+// cannot tell them apart: a checkbox clicked through its label gets 0.)
+let pointerInput = false;
+document.addEventListener('pointerdown', () => { pointerInput = true; }, true);
+document.addEventListener('keydown', () => { pointerInput = false; }, true);
+const letGoIfPointer = e => { if (pointerInput) e.currentTarget.blur(); };
+['prevSec', 'nextSec', 'grainLine', 'grainPart', 'playBtn', 'loopBox', 'overlayBox']
+  .forEach(id => $(id).addEventListener('click', letGoIfPointer));
+['sourceSel', 'rateSel'].forEach(id => $(id).addEventListener('change', letGoIfPointer));
+document.querySelectorAll('[data-dl]').forEach(btn =>
+  btn.addEventListener('click', letGoIfPointer));
 
 document.addEventListener('keydown', e => {
   if (!data || $('resultPanel').classList.contains('hidden')) return;
