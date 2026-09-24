@@ -352,6 +352,34 @@ def test_singing_past_a_line_end_does_not_hide_the_chorus():
     _assert_partition(result, len(notes))
 
 
+def test_a_line_sung_over_and_over_is_one_unit_not_a_chorus():
+    # Found as a block repeating itself, it was cut into parts of a line or
+    # two: 6 parts, 4 of them a single line.
+    notes, lines = _song(['intro'] + ['na na na'] * 8 + ['outro'])
+    result = S.build_sections(notes, lines)
+    assert len(result.parts) == 1 and result.parts[0].repeat_of is None
+
+
+def test_four_identical_lines_are_not_a_block_repeating_itself():
+    notes, lines = _song(['la'] * 4)
+    result = S.build_sections(notes, lines)
+    assert len(result.parts) == 1 and result.parts[0].repeat_of is None
+
+
+def test_a_chorus_is_one_part_even_when_its_halves_repeat():
+    # 'A B A B C' sung twice also holds 'A B' four times; only the whole
+    # block is structure, or each chorus is cut into [A B][A B][C].
+    chorus = ['hold me', 'close', 'hold me', 'close', 'never let go']
+    texts = (['verse one', 'verse two'] + chorus
+             + ['verse three', 'verse four'] + chorus)
+    notes, lines = _song(texts)
+    result = S.build_sections(notes, lines)
+    assert [p.text for p in result.parts] == [
+        'verse one / verse two', ' / '.join(chorus),
+        'verse three / verse four', ' / '.join(chorus)]
+    assert [p.repeat_of for p in result.parts] == [None, None, None, 1]
+
+
 def test_one_repeated_line_is_not_structure():
     notes, lines = _song(['hook', 'a', 'b', 'hook', 'c'])
     result = S.build_sections(notes, lines)

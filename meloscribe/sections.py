@@ -428,10 +428,14 @@ def _lyric_part_cuts(notes, lines: List[Section], lyric: List[int]) -> Set[int]:
     # Repeated blocks of lyric are structure: each occurrence of a repeated
     # run of lines starts a part, and the line after it starts the next one.
     # The runs are of lyric lines only, so a wordless section inside a block
-    # (a held last syllable, an ad-lib) cannot break it.
+    # (a held last syllable, an ad-lib) cannot break it. A line sung again
+    # straight after itself counts once: 'na na na' eight times over is one
+    # line held, not a block repeating itself.
     texts = [_normalise(lines[i].text) for i in lyric]
-    for a, b, length in _repeated_runs(texts):
-        for k in (a, a + length, b, b + length):
+    heads = [k for k in range(len(texts)) if k == 0 or texts[k] != texts[k - 1]]
+    for a, b, length in _repeated_runs([texts[k] for k in heads]):
+        for g in (a, a + length, b, b + length):
+            k = heads[g] if g < len(heads) else len(lyric)
             if 0 < k < len(lyric):
                 starts.add(lyric[k])
 
@@ -474,29 +478,48 @@ def _split_long_parts(lines: List[Section], cuts: List[int]) -> List[int]:
     return out
 
 
-def _repeated_runs(texts: List[Optional[str]]) -> List[Tuple[int, int, int]]:
-    """Maximal runs of at least MIN_REPEAT_LINES lines that occur twice.
+def _repeated_runs(texts: List[str]) -> List[Tuple[int, int, int]]:
+    """The outermost maximal runs of at least MIN_REPEAT_LINES lines that
+    occur twice, as (first start, second start, length).
 
-    Returns (first start, second start, length). Runs never overlap their own
-    repeat, so four identical lines in a row are not mistaken for a block
-    repeating itself.
+    A run never overlaps its own repeat. The caller collapses a line repeated
+    straight after itself, since 'la la la la' would otherwise be found as a
+    block ('la la') repeating itself.
+
+    The halves of a repeated block repeat too: 'A B A B C' sung twice also
+    holds 'A B' four times, and each of those would cut the chorus. So a run
+    whose two occurrences both lie inside occurrences of longer runs is not
+    structure of its own, and is left out.
     """
     runs = []
     n = len(texts)
     for a in range(n):
         for b in range(a + 1, n):
-            if texts[a] is None or texts[a] != texts[b]:
+            if texts[a] != texts[b]:
                 continue
-            if a > 0 and texts[a - 1] is not None and texts[a - 1] == texts[b - 1]:
+            if a > 0 and texts[a - 1] == texts[b - 1]:
                 continue  # not the start of a maximal run
             length = 0
             while (b + length < n and a + length < b
-                   and texts[a + length] is not None
                    and texts[a + length] == texts[b + length]):
                 length += 1
             if length >= MIN_REPEAT_LINES:
                 runs.append((a, b, length))
-    return runs
+
+    outermost = []
+    longer: List[Tuple[int, int]] = []   # occurrences of runs longer than this
+    for length in sorted({r[2] for r in runs}, reverse=True):
+        # reach[s]: how far the longer occurrences starting at or before s go.
+        reach = [0] * (n + 1)
+        for start, end in longer:
+            reach[start] = max(reach[start], end)
+        for s in range(1, n + 1):
+            reach[s] = max(reach[s], reach[s - 1])
+        group = [r for r in runs if r[2] == length]
+        outermost += [(a, b, length) for a, b, _ in group
+                      if reach[a] < a + length or reach[b] < b + length]
+        longer += [(s, s + length) for a, b, _ in group for s in (a, b)]
+    return outermost
 
 
 def _normalise(text: str) -> str:
