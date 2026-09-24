@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
@@ -24,8 +24,10 @@ from ..lyrics.service import LyricsMode
 from ..output import format_csv, format_json, format_leadsheet, format_lrc, \
     format_table, write_midi
 from ..pipeline import Pipeline, TranscriptionRequest
+from ..sections import sections_for_output
 from ..stems import best_device
 from .jobs import JobStatus, JobStore
+from .media import audio_response
 
 UPLOAD_DIR = Path('data/uploads')
 EXPORT_DIR = Path('data/exports')
@@ -71,7 +73,10 @@ def _upload_path(upload_id: str) -> Path:
     # Traversal guard: an id like '../../etc/passwd' must not resolve outside
     # UPLOAD_DIR, even though ids are server-generated today.
     candidate = (UPLOAD_DIR / upload_id).resolve()
-    if not str(candidate).startswith(str(UPLOAD_DIR.resolve())):
+    # A parent check, not a string prefix: '../uploads_private/x' shares the
+    # prefix, and '' resolves to the directory itself. Uploads are stored flat,
+    # so the only valid parent is the upload directory.
+    if candidate.parent != UPLOAD_DIR.resolve():
         raise HTTPException(status_code=400, detail='Invalid upload id')
     if not candidate.exists():
         raise HTTPException(status_code=404, detail='Upload not found')
@@ -274,11 +279,56 @@ def job_notes(job_id: str) -> Dict[str, Any]:
     return {
         'notes': [n.to_dict() for n in result.notes],
         'key': result.key.name if result.key else None,
+        # `key` is the concert key; transposed notes are read in this one.
+        'written_key': result.written_key.name if result.written_key else None,
+        # How the notes are named: the written key's accidentals, 'flat' or
+        # 'sharp', and its name for every pitch class (index = pitch class),
+        # so the piano roll can label its rows exactly as the notes read.
+        'spelling': result.spelling,
+        'pitch_names': list(result.pitch_names),
         'duration': result.duration,
         'lyrics': result.lyrics.summary() if result.lyrics else None,
+        'word_level': bool(result.lyrics and result.lyrics.found
+                           and result.lyrics.lyrics.has_word_timing),
         'rhythm': result.rhythm.to_dict() if result.rhythm else None,
         'warnings': result.warnings,
+        # Note pitches are transposed for the player; the audio is not. The UI
+        # needs the offset to play notes back at the pitch that was sung.
+        'transpose': int(job.params.get('transpose') or 0),
+        'sections': sections_for_output(result).to_dict(),
+        'audio': sorted(_audio_sources(job)),
     }
+
+
+def _audio_sources(job) -> Dict[str, Path]:
+    """The playable files for a finished job: the upload, and its vocal stem
+    when separation produced one."""
+    sources: Dict[str, Path] = {}
+    try:
+        sources['mix'] = _upload_path(job.params['upload_id'])
+    except (HTTPException, KeyError):
+        pass
+    stems = getattr(job.result, 'stems', None)
+    if stems is not None and stems.vocals.exists():
+        sources['vocals'] = stems.vocals
+    elif job.params.get('vocals_only') and 'mix' in sources:
+        sources['vocals'] = sources['mix']
+    return sources
+
+
+@app.get('/api/jobs/{job_id}/audio/{source}')
+def job_audio(job_id: str, source: str, request: Request):
+    """Stream the mix or the vocal stem, for section playback.
+
+    Range requests are answered, which is what lets the browser seek straight
+    to a section instead of downloading the song up to it.
+    """
+    job = _finished(job_id)
+    path = _audio_sources(job).get(source)
+    if path is None:
+        raise HTTPException(status_code=404,
+                            detail=f"No {source!r} audio for this job")
+    return audio_response(path, request.headers.get('range'))
 
 
 @app.get('/api/jobs/{job_id}/download/{fmt}')

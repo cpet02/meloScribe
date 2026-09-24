@@ -40,6 +40,7 @@ meloscribe/
     align.py       LRC parsing, onset snapping, CTC forced alignment, Whisper
     service.py     tier selection + the track-name gate
   pipeline.py      stage orchestration with weighted progress
+  sections.py      splits the notes into lyric lines / song parts / phrases
   output.py        renderers
   cli.py           command line
   api/             FastAPI + threaded job store
@@ -355,6 +356,40 @@ but nothing refines *where*.
   melody over a 66 BPM backbeat and librosa still found 132, so the octave
   diagnostics are exercised only against synthetically halved and doubled
   grids, never against a tracker that actually erred.
+
+## Section slider
+
+The web UI steps through the result one section at a time
+(`meloscribe/sections.py`, served in `/api/jobs/{id}/notes` as `sections`;
+audio for playback from `/api/jobs/{id}/audio/{mix|vocals}`).
+
+- **Invariant: every note is in exactly one section per granularity**, in time
+  order (property-tested over random layouts in `tests/test_sections.py`).
+  Notes outside every lyric line (ad-libs, hums, bleed in a break) get
+  'No lyric' sections of their own rather than disappearing; fragments under
+  0.6 s of singing are folded into a near neighbour, never into a section more
+  than 10 s long, and never pulling a lyric line's start more than 1.35 s ahead
+  of its first word.
+- Lines come from the timed lyrics. A note up to 0.15 s before a line's start
+  belongs to that line (pickup syllables land a hair early) unless it overlaps
+  the previous line more. Plain LRClib lyrics without forced alignment have
+  placeholder times, so they are not used to cut: the fallback is phrases split
+  at rests >= 0.45 s; phrases > 10 s split at their longest gap (near-ties go
+  to the middle, and both halves must keep >= 0.6 s of singing).
+- Parts break where consecutive *lyric lines* are >= 2.5 s apart - measured
+  between lyric lines, so stray notes in an instrumental break cannot glue the
+  break onto the next verse; those notes become a part of their own - and
+  around any run of >= 2 lyric lines that repeats elsewhere (how a chorus is
+  found). A part > 45 s splits at its longest gap. A part with the same words
+  as an earlier one gets `repeat_of`. Without lyrics, parts break at silences.
+- A wordless LRC timestamp (`[01:23.45]`, `♪`) now *ends* the line before it
+  instead of being dropped, so a line no longer runs through an instrumental
+  break. `refine_line_times` keeps those ends. Still unhandled (pre-existing):
+  the `[offset:]` tag, and `[00:00.00] Title` lines read as lyrics.
+- Seeking needs HTTP Range. Starlette's `FileResponse` only answers Range from
+  0.39; `meloscribe/api/media.py` serves ranges itself on older versions.
+- All thresholds are judgement calls tested on synthetic layouts only; tune
+  them against real songs.
 
 ## Working agreements
 

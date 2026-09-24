@@ -21,9 +21,10 @@ next tier down rather than failing the run.
 
 from __future__ import annotations
 
+import bisect
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -89,8 +90,14 @@ def parse_lrc(content: str) -> List[LyricLine]:
     Handles repeated timestamps on one line (`[00:12.00][01:30.00]chorus`),
     which is how LRC files mark a repeated refrain and which a naive parser
     silently drops.
+
+    A timestamp with no words (`[01:23.45]`, or just `♪`) is not a line but it
+    is not noise either: it marks where the line before it stops, which is how
+    LRC files mark an instrumental break. It closes that line instead of being
+    dropped, or the line would stretch across the whole break.
     """
     lines: List[LyricLine] = []
+    breaks: List[float] = []
 
     for raw in content.splitlines():
         raw = raw.strip()
@@ -102,23 +109,33 @@ def parse_lrc(content: str) -> List[LyricLine]:
             continue
 
         text = raw[stamps[-1].end():].strip()
-        if not text:
-            continue  # a timing marker with no words: a musical rest
+        times = [_stamp_seconds(stamp) for stamp in stamps]
+        if not re.search(r'\w', text):
+            breaks.extend(times)  # a timing marker with no words: a rest
+            continue
 
-        for stamp in stamps:
-            minutes = int(stamp.group(1))
-            seconds = int(stamp.group(2))
-            fraction = stamp.group(3) or '0'
-            # Two digits are hundredths, three are milliseconds.
-            divisor = 100.0 if len(fraction) <= 2 else 1000.0
-            lines.append(LyricLine(
-                start=minutes * 60 + seconds + int(fraction) / divisor,
-                text=text))
+        lines.extend(LyricLine(start=t, text=text) for t in times)
 
     lines.sort(key=lambda x: x.start)
-    for i, line in enumerate(lines[:-1]):
-        line.end = lines[i + 1].start
+    breaks.sort()
+    for i, line in enumerate(lines):
+        following = lines[i + 1].start if i + 1 < len(lines) else None
+        idx = bisect.bisect_right(breaks, line.start)
+        rest = breaks[idx] if idx < len(breaks) else None
+        if rest is not None and (following is None or rest < following):
+            line.end = rest
+        else:
+            line.end = following
     return lines
+
+
+def _stamp_seconds(stamp: 're.Match') -> float:
+    minutes = int(stamp.group(1))
+    seconds = int(stamp.group(2))
+    fraction = stamp.group(3) or '0'
+    # Two digits are hundredths, three are milliseconds.
+    divisor = 100.0 if len(fraction) <= 2 else 1000.0
+    return minutes * 60 + seconds + int(fraction) / divisor
 
 
 def parse_plain(content: str, duration: float) -> List[LyricLine]:
@@ -162,18 +179,31 @@ def refine_line_times(lines: Sequence[LyricLine], onsets: np.ndarray,
         return list(lines)
 
     onsets = np.asarray(onsets, dtype=float)
-    refined: List[LyricLine] = []
+    ordered = sorted(lines, key=lambda x: x.start)
+    refined: List[Tuple[LyricLine, bool]] = []
 
-    for line in lines:
+    for i, line in enumerate(ordered):
+        # An end short of the next line's start was set on purpose - by a rest
+        # marker in the LRC - and must survive the re-timing below.
+        following = ordered[i + 1].start if i + 1 < len(ordered) else None
+        explicit = (line.end is not None and line.end > line.start
+                    and (following is None or line.end < following))
         nearest = onsets[int(np.argmin(np.abs(onsets - line.start)))]
         start = float(nearest) if abs(nearest - line.start) <= max_shift else line.start
-        refined.append(LyricLine(start=start, text=line.text, end=line.end,
-                                 words=list(line.words)))
+        if explicit and start >= line.end:
+            # An onset past the point where the line stops is not its start.
+            # Taking it would lose the end: recomputed, it would run the line
+            # through the break, or for the last line fall before the start.
+            start = line.start
+        refined.append((LyricLine(start=start, text=line.text, end=line.end,
+                                  words=list(line.words)), explicit))
 
-    refined.sort(key=lambda x: x.start)
-    for i, line in enumerate(refined[:-1]):
-        line.end = refined[i + 1].start
-    return refined
+    refined.sort(key=lambda pair: pair[0].start)
+    for i, (line, explicit) in enumerate(refined):
+        if i + 1 < len(refined):
+            following = refined[i + 1][0].start
+            line.end = min(line.end, following) if explicit else following
+    return [line for line, _ in refined]
 
 
 # --------------------------------------------------------------------------

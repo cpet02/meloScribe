@@ -95,6 +95,15 @@ uvicorn meloscribe.api.app:app --port 8000
 Open <http://localhost:8000>. Drop in a file, confirm the track name, run.
 Progress is reported per stage and long jobs can be cancelled.
 
+The result can be stepped through **one section at a time** with a slider:
+one lyric line each, or one song part (verse, chorus…, with repeated choruses
+marked). Without timed lyrics it falls back to sung phrases, split at the
+rests. The zoomed piano roll and the note table then show only that section,
+and the section can be played back — the full song, the vocal stem, the
+transcribed notes, or the notes on top of the recording — looped and slowed
+down. Click a note to hear just that note; Space plays, ← → move between
+sections.
+
 ### Command line
 
 ```bash
@@ -271,6 +280,7 @@ meloscribe/
     align.py       LRC parsing, onset snapping, forced alignment, Whisper
     service.py     tier selection and the track-name gate
   pipeline.py      stage orchestration with weighted progress
+  sections.py      lyric lines / song parts / phrases for the section slider
   output.py        table / csv / json / leadsheet / lrc / midi
   cli.py           command line
   api/             FastAPI backend + background jobs

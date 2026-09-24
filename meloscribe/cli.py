@@ -134,8 +134,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not args.quiet:
         sys.stderr.write('\n')
         if output.key:
-            print(f"key: {output.key.name} (confidence {output.key.confidence:.2f})",
-                  file=sys.stderr)
+            line = f"key: {output.key.name} (confidence {output.key.confidence:.2f})"
+            # Transposed notes are read in a different key from the one sung;
+            # naming only the concert key would contradict every note.
+            if output.written_key:
+                line += f"  written: {output.written_key.name} ({args.transpose:+d})"
+            print(line, file=sys.stderr)
         if output.lyrics:
             print(f"lyrics: {output.lyrics.summary()}", file=sys.stderr)
         if output.rhythm:
@@ -160,10 +164,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
         return 0
 
+    extra = {}
+    if output.key and args.format == 'json':
+        extra['key'] = output.key.name
+        if output.written_key:
+            extra['written_key'] = output.written_key.name
     text = render(output.notes, args.format, show_voters=args.show_voters,
-                  title=args.track, artist=args.artist,
-                  **({'key': output.key.name} if output.key and
-                     args.format == 'json' else {}))
+                  title=args.track, artist=args.artist, **extra)
 
     if args.output:
         Path(args.output).write_text(text, encoding='utf-8')

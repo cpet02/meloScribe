@@ -53,7 +53,9 @@ def best_device(requested: Optional[str] = None) -> str:
         return requested
     try:
         import torch
-    except ImportError:
+    except Exception:
+        # Not just ImportError: a half-installed torch raises OSError on a
+        # missing shared library, and that must not take /api/health down.
         return 'cpu'
     if torch.cuda.is_available():
         return 'cuda'

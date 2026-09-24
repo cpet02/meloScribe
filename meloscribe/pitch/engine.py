@@ -10,24 +10,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from .. import audio as audio_mod
 from ..audio import Audio
+from ..key import SPELLINGS
 from .fusion import DecodedFrame, FusionSettings, decode, key_prior_vector
 from .grid import HOP, n_frames_for
 from .voters import AUTO, DEFAULT_VOTERS, Voter, build_voters
 
 ProgressFn = Callable[[float, str], None]
 
-NOTE_NAMES = ('C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B')
 
-
-def midi_to_name(midi: float) -> str:
+def midi_to_name(midi: float, names: Sequence[str] = SPELLINGS['sharp']) -> str:
+    """`names` is what each pitch class is called, index = pitch class - a
+    key's `pitch_names`."""
     rounded = int(round(midi))
-    return f"{NOTE_NAMES[rounded % 12]}{rounded // 12 - 1}"
+    name = names[rounded % 12]
+    # The octave number goes with the letter, not the sounding pitch: C#
+    # minor's leading tone at MIDI 60 is B#3, the same pitch as C4.
+    alter = name.count('#') - name.count('b')
+    return f"{name}{(rounded - alter) // 12 - 1}"
 
 
 @dataclass
@@ -45,10 +50,16 @@ class TranscribedNote:
     # None means "not assessed", which is not the same as "on the beat".
     beat_deviation: Optional[float] = None   # beats from the nearest grid slot
     duration_beats: Optional[float] = None
+    # What each pitch class is called, set by the pipeline from the key the
+    # notes are written in (see key.note_names). One table shared by every
+    # note, and left out of to_dict() and repr, where `name` already says
+    # what it decided. It changes the name only: `midi`, and with it the MIDI
+    # export, is the same whatever the table.
+    pitch_names: Tuple[str, ...] = field(default=SPELLINGS['sharp'], repr=False)
 
     @property
     def name(self) -> str:
-        return midi_to_name(self.midi)
+        return midi_to_name(self.midi, self.pitch_names)
 
     @property
     def duration(self) -> float:
