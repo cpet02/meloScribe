@@ -6,6 +6,7 @@ score, so each is pinned against a tiny fabricated copy of that corpus.
 """
 
 import json
+import warnings
 
 import numpy as np
 import pytest
@@ -108,21 +109,39 @@ def test_ikala_splits_channels_and_centres_32ms_frames(tmp_path):
     assert truth.freqs.tolist() == pytest.approx([0.0, 440.0])
 
 
-def test_tonas_applies_tuning_offset(tmp_path):
+def _tonas(tmp_path, stored_midi):
+    """A TONAS track sung 43 cents sharp of A440: f0 379.3 Hz (MIDI 66.43)
+    over its one note, as in mirdata's own sample file."""
     src = tmp_path / 'TONAS'
     _wav(src / 'Deblas' / '01-D_X.wav')
     (src / 'Deblas' / '01-D_X.f0.Corrected').write_text(
-        '0.197 0.1 0.000 0.000\n0.209 0.1 143.9 379.3\n')
+        '0.197 0.1 0.000 0.000\n0.209 0.1 143.9 379.3\n'
+        '0.300 0.1 143.9 379.3\n0.500 0.1 143.9 379.3\n')
     (src / 'Deblas' / '01-D_X.notes.Corrected').write_text(
-        '50.000000\n0.2, 0.4, 66.00, 0.01\n')
+        f'43.000000\n0.216667, 0.433333, {stored_midi}, 0.018007\n')
+    return src
 
-    assert convert_tonas(src, tmp_path / 'out') == ['01-D_X']
+
+def test_tonas_notes_already_include_the_tuning(tmp_path):
+    # The MIDI column carries the 43 cents itself (66.43, and the f0 agrees);
+    # adding the first line's tuning again, as mirdata does, gave 66.86.
+    src = _tonas(tmp_path, '66.430000')
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')      # the f0 check must stay quiet
+        assert convert_tonas(src, tmp_path / 'out') == ['01-D_X']
 
     note = read_notes_csv(tmp_path / 'out' / '01-D_X.notes.csv')[0]
-    assert (note.onset, note.offset) == pytest.approx((0.2, 0.6))
-    assert note.midi == pytest.approx(66.5)         # +50 cents of tuning
+    assert (note.onset, note.offset) == pytest.approx((0.216667, 0.65))
+    assert note.midi == pytest.approx(66.43)
     truth = load_csv_f0(tmp_path / 'out' / '01-D_X.csv')
-    assert truth.freqs.tolist() == pytest.approx([0.0, 379.3])  # corrected column
+    assert truth.freqs.tolist() == pytest.approx([0.0, 379.3, 379.3, 379.3])
+
+
+def test_tonas_notes_off_their_own_f0_are_flagged(tmp_path):
+    # A file in a different convention (notes in whole semitones of the
+    # singer's tuning) would score against pitches 43 cents off: say so.
+    with pytest.warns(UserWarning, match=r'\+43 cents from the f0'):
+        convert_tonas(_tonas(tmp_path, '66.000000'), tmp_path / 'out')
 
 
 def test_medleydb_refuses_the_multi_line_melody_definition(tmp_path):
