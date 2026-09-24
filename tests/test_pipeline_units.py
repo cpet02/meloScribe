@@ -156,6 +156,13 @@ def test_parse_lrc_handles_millisecond_precision():
     assert parse_lrc('[00:12.50]Word')[0].start == pytest.approx(12.5)
 
 
+def test_parse_lrc_reads_a_one_digit_fraction_as_tenths():
+    # Divided by 100 like two digits, [00:10.5] read as 10.05 s.
+    assert parse_lrc('[00:10.5]Word')[0].start == pytest.approx(10.5)
+    assert parse_lrc('[00:10.05]Word')[0].start == pytest.approx(10.05)
+    assert parse_lrc('[00:10]Word')[0].start == pytest.approx(10.0)
+
+
 def test_parse_lrc_skips_metadata_and_empty_lines():
     lines = parse_lrc('[ti:Song]\n[ar:Someone]\n[00:05.00]\n[00:10.00]Real')
     assert len(lines) == 1 and lines[0].text == 'Real'

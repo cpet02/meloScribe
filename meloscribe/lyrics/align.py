@@ -133,9 +133,10 @@ def _stamp_seconds(stamp: 're.Match') -> float:
     minutes = int(stamp.group(1))
     seconds = int(stamp.group(2))
     fraction = stamp.group(3) or '0'
-    # Two digits are hundredths, three are milliseconds.
-    divisor = 100.0 if len(fraction) <= 2 else 1000.0
-    return minutes * 60 + seconds + int(fraction) / divisor
+    # A decimal fraction, however many digits: .5 tenths, .50 hundredths,
+    # .500 milliseconds. (Two digits or fewer used to mean hundredths, so
+    # [00:10.5] read as 10.05 s.)
+    return minutes * 60 + seconds + int(fraction) / 10 ** len(fraction)
 
 
 def parse_plain(content: str, duration: float) -> List[LyricLine]:
