@@ -49,11 +49,13 @@ UPLOAD_ID = re.compile(r'[0-9a-f]{12}(?:%s)'
 
 app = FastAPI(title='meloScribe', version=__version__)
 
-# The UI is served from this same origin, but a permissive policy keeps a
-# separate front-end dev server workable.
+# The UI is served from this same origin; allowing other local origins keeps a
+# separate front-end dev server workable. Not '*': that let any web page the
+# user visited list their jobs and read their uploads and stems from here.
 app.add_middleware(
-    CORSMiddleware, allow_origins=['*'], allow_methods=['*'],
-    allow_headers=['*'],
+    CORSMiddleware,
+    allow_origin_regex=r'https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?',
+    allow_methods=['*'], allow_headers=['*'],
 )
 
 jobs = JobStore(max_workers=1)

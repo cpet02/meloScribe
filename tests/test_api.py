@@ -67,6 +67,21 @@ def test_health_reports_capabilities():
     assert isinstance(body['voters'], dict) and body['voters']
 
 
+def test_other_websites_cannot_read_the_local_api():
+    """A page on any site the user visits must not be able to list their jobs
+    or fetch their uploads from this server; a dev server on localhost can."""
+    foreign = client.get('/api/jobs', headers={'Origin': 'https://example.com'})
+    assert 'access-control-allow-origin' not in foreign.headers
+    preflight = client.options('/api/jobs', headers={
+        'Origin': 'https://example.com', 'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type'})
+    assert preflight.status_code == 400
+    for origin in ('http://localhost:5173', 'http://127.0.0.1:8000',
+                   'http://[::1]:3000'):
+        local = client.get('/api/jobs', headers={'Origin': origin})
+        assert local.headers['access-control-allow-origin'] == origin
+
+
 def test_index_serves_the_ui():
     response = client.get('/')
     assert response.status_code == 200
