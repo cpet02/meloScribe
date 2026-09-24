@@ -4,6 +4,85 @@ Paste this into a new chat to continue work.
 
 ---
 
+## Pending review: branch `main-ob0jw0`
+
+Built and tested in a cloud session (Linux, CPU only, no Demucs weights), so
+it has never run on the GPU or through real separation. Review and merge it
+with **`/merge-review`**: it runs as an agent pinned to Opus at max effort
+(`.claude/agents/merge-reviewer.md`), runs the whole test suite and the
+benchmark on `main` and on the branch, reviews the diff, and merges and pushes
+only if nothing regressed. It needs nothing installed beyond `requirements.txt`.
+
+What the branch adds:
+- **Section slider** in the web UI: step through lyric lines / song parts /
+  sung phrases, with a zoomed piano roll, section playback (song, vocal stem,
+  synthesized notes, or notes on top), loop, slow-down, click-to-hear a note.
+  Worth a manual look after merging: run a real song through the web UI.
+- **Sheet music**: beat-quantized MusicXML export (web UI button, `--format
+  musicxml`, `--quantize` for MIDI).
+- **Note names follow the written key** (flats in flat keys; the written key
+  is reported when transposing).
+- **Detection fixes** measured on the synthetic harness (below), crash fixes
+  from fuzzing, a Range-capable audio endpoint, an upload-id traversal fix.
+- **Measurement**: `runner --suite hard`, `eval.stress` (single-condition
+  sweeps + input fuzzing), `eval.datasets` (real corpora), `eval.realistic`
+  (human-voice songs as MP3, see below).
+
+## Next: accuracy work, run locally on the GPU
+
+The first measurements on **real singing** say the synthetic 1.000 was
+flattering. On vocadito_1 (real solo voice, human note labels) ensemble note
+F1 is **0.537**, while two human annotators agree at 0.862. Pitch is mostly
+right; segmentation is not (F1 rises to 0.76 at a 150 ms onset tolerance).
+Ranked by what they cost, each with its evidence:
+
+1. **The decoded path is quantized to semitones, and notes are split wherever
+   it flips.** Vibrato of ±75 c already costs F1 (0.88), ±100 c shreds held
+   notes (0.16: 50 notes for 12, flipping 6.8 times a second); scoops into
+   notes become short semitone-off fragments (vocadito_1 at 0.66 s and
+   2.13-2.67 s); detune past ±45 c and slow drift split too. Averaging the
+   fused pitch over one vibrato period lands 83% of frames on the right
+   semitone against 36% for the decoder. Fix to try: split on onset and
+   voicing evidence only, then give each note the median of its continuous
+   (sub-semitone) pitch. This also makes `cents_off` meaningful - today it
+   can only be 0 or +/-50.
+2. **Same-register accompaniment is transcribed in the rests.** Piano 20 dB
+   *below* the voice already drops F1 to 0.55: CREPE is voiced on 66% of
+   piano-only frames, basic-pitch on 97%, and nothing measures level. Muting
+   voicing more than 12 dB below the loud (95th percentile) level gives 1.00
+   at +20 and +10 dB SNR offline. But a loudness prior tried in the fusion
+   unvoiced genuinely soft lead notes (recall 1.00 -> 0.93) and was rejected,
+   so it needs a design that separates "quiet lead" from "accompaniment"
+   before it can ship. The MIR-1K karaoke mixes show the same collapse in
+   reverse (voicing recall 0.97 -> 0.56 at 0 dB).
+3. **Very short notes vanish**: F1 0.86 at 60 ms, 0.00 at 40 ms (CREPE alone
+   1.00). Fused voicing is a weighted mean and basic-pitch's voicing recall is
+   0.09 on 40 ms notes. Fusing voicing by maximum gives 1.00 at both lengths,
+   at a voicing false-alarm cost of 0.28 -> 0.46 - apply the no-veto floor
+   (decision 2) to voicing, and measure the trade.
+4. **A harmony at or above the lead's level wins** (a third below at 0 dB:
+   F1 0.52). `FusionSettings.backing_weight` fixes the synthetic tails
+   (--suite hard 0.892 -> 0.943) but hurt every real recording with
+   comparable voices, so it is off. Validate it on real separated pop stems
+   with backing vocals, and gate it on a clear level gap.
+
+Where to measure, with before/after for every change (decision 1):
+
+    venv/Scripts/python -m meloscribe.eval.runner --suite all --systems ensemble
+    venv/Scripts/python -m meloscribe.eval.stress sweep --axis all --systems ensemble
+    venv/Scripts/python -m meloscribe.eval.stress fuzz
+
+Real annotated data could not be downloaded in the cloud session (zenodo and
+huggingface were blocked); locally it can. The full vocadito corpus (40 solo
+tracks, CC BY, zenodo record 5578807) converts with
+`venv/Scripts/python -m meloscribe.eval.datasets vocadito <unzipped> data/eval/vocadito`
+and scores with `runner --dataset data/eval/vocadito --systems ensemble`
+(note F1 against human notes). iKala, TONAS and MedleyDB convert the same
+way. One track is what every real number above rests on - score the corpus
+before trusting any of them.
+
+---
+
 ## What this is
 
 `C:\Users\chris\Documents\meloScribe` — transcribes the sung/lead melody out of
