@@ -46,6 +46,10 @@ class TranscribedNote:
     voter_scores: Dict[str, float] = field(default_factory=dict)
     lyric: Optional[str] = None
     syllable: Optional[str] = None
+    # Which aligned word the note sings, as an index into the song's words;
+    # None without word-level alignment. `lyric` alone cannot tell a word
+    # held over several notes from the same word sung again ("na na na").
+    word: Optional[int] = None
     # Filled in by the rhythm stage when a trustworthy beat grid was found;
     # None means "not assessed", which is not the same as "on the beat".
     beat_deviation: Optional[float] = None   # beats from the nearest grid slot
@@ -86,6 +90,7 @@ class TranscribedNote:
             'cents_off': round(self.pitch_cents, 1),
             'voters': {k: round(v, 3) for k, v in self.voter_scores.items()},
             'lyric': self.lyric,
+            **({'word': self.word} if self.word is not None else {}),
         }
 
 

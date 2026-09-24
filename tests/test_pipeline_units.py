@@ -294,6 +294,21 @@ def test_melisma_gives_several_notes_the_same_word():
     _attach_words(notes, [LyricWord('ah', 0.0, 0.7)])
 
     assert [n.lyric for n in notes] == ['ah', 'ah', None]
+    assert [n.word for n in notes] == [0, 0, None]
+
+
+def test_a_word_sung_again_is_a_different_word():
+    """By text alone "na na na" is one word held over three notes, and the
+    piano roll labelled only the first; the word index tells them apart."""
+    notes = [TranscribedNote(60, 0.0, 0.3, 0.9), TranscribedNote(62, 0.3, 0.6, 0.9),
+             TranscribedNote(64, 0.6, 0.9, 0.9), TranscribedNote(65, 0.9, 1.2, 0.9)]
+    _attach_words(notes, [LyricWord('na', 0.0, 0.3), LyricWord('na', 0.3, 0.6),
+                          LyricWord('na', 0.6, 1.2)])
+    assert [n.word for n in notes] == [0, 1, 2, 2]
+    assert [n.to_dict()['word'] for n in notes] == [0, 1, 2, 2]
+    # Without word timing nothing changes in what a note serialises.
+    _attach_lines(notes, [LyricLine(start=0.0, text='na na na')])
+    assert all(n.word is None and 'word' not in n.to_dict() for n in notes)
 
 
 def test_line_attachment_respects_line_ends():

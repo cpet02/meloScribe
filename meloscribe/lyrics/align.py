@@ -365,6 +365,7 @@ def _attach_words(notes: Sequence, words: Sequence[LyricWord]) -> None:
     if not words:
         for note in notes:
             note.lyric = None
+            note.word = None
         return
 
     starts = np.array([w.start for w in words])
@@ -376,14 +377,18 @@ def _attach_words(notes: Sequence, words: Sequence[LyricWord]) -> None:
         if overlap[best] > 0:
             note.lyric = words[best].text
             note.syllable = words[best].text
+            note.word = best
         else:
             # No overlap: a sung note between words (a hum, or a held vowel
             # past the word boundary). Left unlabelled rather than guessed.
             note.lyric = None
             note.syllable = None
+            note.word = None
 
 
 def _attach_lines(notes: Sequence, lines: Sequence[LyricLine]) -> None:
+    for note in notes:
+        note.word = None    # line-level lyrics name no single word
     if not lines:
         for note in notes:
             note.lyric = None

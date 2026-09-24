@@ -1254,11 +1254,14 @@ function drawSection(playhead) {
       ctx.fillText(label, rx + 3, ry + barH / 2);
     }
     // Word-level lyrics: each word once, under the first note that sings it.
-    if (data.word_level && members.has(i) && n.lyric && n.lyric !== lastWord) {
+    // Told apart by the aligner's word index, not the text, or "na na na"
+    // would show a single "na" (older results have no index: text, then).
+    const word = n.word ?? n.lyric;
+    if (data.word_level && members.has(i) && n.lyric && word !== lastWord) {
       ctx.fillStyle = c.muted;
       ctx.fillText(n.lyric, rx, Math.min(height - bottom - 6, ry + barH + 8));
     }
-    lastWord = n.lyric;
+    lastWord = word;
     rects.push({ i, x: rx, y: ry, w: rw, h: barH });
   }
 
