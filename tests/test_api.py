@@ -367,3 +367,18 @@ def test_musicxml_download_is_sheet_music(uploads):
     # Line-level lyrics: each line's text where its first note starts.
     words = [w.text for w in root.iter('words')]
     assert 'first line' in words and 'second line' in words
+
+
+@pytest.mark.parametrize('fmt', ['musicxml', 'csv'])
+def test_downloads_are_named_after_any_track(uploads, fmt):
+    """Headers are Latin-1: a curly apostrophe or a Japanese title must be
+    carried as RFC 5987 UTF-8, not crash the download."""
+    from urllib.parse import unquote
+
+    job = _inject_job(uploads)
+    job.params['track_name'] = 'Don’t Stop 夜に駆ける'
+    response = client.get(f"/api/jobs/{job.id}/download/{fmt}")
+    assert response.status_code == 200, response.text
+    disposition = response.headers['content-disposition']
+    assert disposition.startswith("attachment; filename*=utf-8''")
+    assert unquote(disposition.split("''", 1)[1]) == f'Don’t Stop 夜に駆ける.{fmt}'

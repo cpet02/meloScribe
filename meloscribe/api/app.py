@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -334,6 +335,20 @@ def job_audio(job_id: str, source: str, request: Request):
     return audio_response(path, request.headers.get('range'))
 
 
+def _attachment(filename: str) -> Dict[str, str]:
+    """A Content-Disposition header for any track name.
+
+    Headers are Latin-1, so a name like "Don’t Stop" or a Japanese title
+    would crash the response. Named exactly as FileResponse names the MIDI
+    download: plain when the name needs no escaping, RFC 5987 UTF-8 when it
+    does.
+    """
+    quoted = quote(filename)
+    if quoted != filename:
+        return {'Content-Disposition': f"attachment; filename*=utf-8''{quoted}"}
+    return {'Content-Disposition': f'attachment; filename="{filename}"'}
+
+
 @app.get('/api/jobs/{job_id}/download/{fmt}')
 def download(job_id: str, fmt: str):
     """Render the transcription in the requested format."""
@@ -362,10 +377,8 @@ def download(job_id: str, fmt: str):
             job.result, score, title=job.params.get('track_name', ''),
             artist=job.params.get('artist_name', ''),
             transpose=int(job.params.get('transpose') or 0))
-        return Response(
-            body, media_type=MUSICXML_MEDIA_TYPE,
-            headers={'Content-Disposition': f'attachment; filename="{title}.'
-                                            f'{MUSICXML_EXTENSION}"'})
+        return Response(body, media_type=MUSICXML_MEDIA_TYPE,
+                        headers=_attachment(f"{title}.{MUSICXML_EXTENSION}"))
 
     renderers = {
         'table': lambda: format_table(notes),
@@ -380,10 +393,8 @@ def download(job_id: str, fmt: str):
     media = {'csv': 'text/csv', 'json': 'application/json'}.get(fmt, 'text/plain')
     extension = {'leadsheet': 'txt', 'table': 'txt'}.get(fmt, fmt)
 
-    return PlainTextResponse(
-        renderers[fmt](), media_type=media,
-        headers={'Content-Disposition':
-                 f'attachment; filename="{title}.{extension}"'})
+    return PlainTextResponse(renderers[fmt](), media_type=media,
+                             headers=_attachment(f"{title}.{extension}"))
 
 
 @app.on_event('shutdown')
