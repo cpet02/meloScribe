@@ -4,16 +4,37 @@ Paste this into a new chat to continue work.
 
 ---
 
-## Pending review: branch `main-ob0jw0`
+## Merged 2026-09-24: `main-ob0jw0` (a1d3f1d)
 
-Built and tested in a cloud session (Linux, CPU only, no Demucs weights), so
-it has never run on the GPU or through real separation. Review and merge it
-with **`/merge-review`**: it runs as an agent pinned to Opus at max effort
-(`.claude/agents/merge-reviewer.md`), runs the whole test suite and the
-benchmark on `main` and on the branch, reviews the diff, and merges and pushes
-only if nothing regressed. It needs nothing installed beyond `requirements.txt`.
+Reviewed on this machine (GPU, real separation) before merging: the test
+suite and the core benchmark unchanged - the benchmark is now also
+deterministic run to run - with eight fixes made during review. Branches are
+reviewed and merged with **`/merge-review`** (`.claude/agents/merge-reviewer.md`).
 
-What the branch adds:
+**Pending review: `review-followups`**, the review's open findings: upload ids
+are pattern-checked before any filesystem access (Windows device names, UNC
+paths) and CORS allows local origins only; the audio endpoint no longer holds
+files open, which broke re-separation on Windows while a stem was playing;
+CLI output is UTF-8 when redirected; sections compare times to the
+microsecond (a nanosecond of jitter regrouped half of random layouts) and
+treat a repeated line or a chorus's repeated halves as one unit; keyboard
+focus after mouse clicks in the UI; Cb in six-flat keys; and fixes to the
+stress fuzzer, `realistic score --resume` and forced-alignment line timing.
+
+Still open after it:
+- Repeated words show once on the zoomed roll: labels are de-duplicated by
+  text, and telling "na na na" apart needs a word index in the note payload.
+- `stress` sweep summaries (`breaking_points`) read each axis from one end,
+  so two-sided axes (register, detune, sample rate) report one side only.
+- `music21` is in the dev extra but not installed here, so the 25 MusicXML
+  read-back tests in `tests/test_notation.py` have never run on this machine.
+- The TONAS converter adds the file's tuning offset to note pitches; that
+  reading was not checked against the TONAS documentation.
+- By hand in a browser: "Notes on top" against the singer at 0.75x and 0.5x
+  (VBR MP3 seeking), the first Play in Safari/Firefox, lyric-line sections on
+  a real song with synced lyrics (the only local sample is an instrumental).
+
+What `main-ob0jw0` added:
 - **Section slider** in the web UI: step through lyric lines / song parts /
   sung phrases, with a zoomed piano roll, section playback (song, vocal stem,
   synthesized notes, or notes on top), loop, slow-down, click-to-hear a note.
