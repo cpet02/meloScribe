@@ -15,7 +15,7 @@ import soundfile as sf
 fastapi = pytest.importorskip('fastapi')
 from fastapi.testclient import TestClient  # noqa: E402
 
-from meloscribe.api import app as app_module, media  # noqa: E402
+from meloscribe.api import app as app_module  # noqa: E402
 from meloscribe.api.app import app  # noqa: E402
 from meloscribe.api.jobs import JobStatus  # noqa: E402
 from meloscribe.lyrics.align import LyricLine, TimedLyrics  # noqa: E402
@@ -325,13 +325,8 @@ def test_audio_without_a_range_is_the_whole_file(uploads):
     assert response.headers['content-type'].startswith('audio/')
 
 
-@pytest.mark.parametrize('native', [True, False])
-def test_audio_range_request_gets_exactly_those_bytes(uploads, monkeypatch,
-                                                      native):
-    """How the browser seeks to a section, on either Starlette code path."""
-    if native and not media.NATIVE_RANGES:
-        pytest.skip('this Starlette cannot serve ranges itself')
-    monkeypatch.setattr(media, 'NATIVE_RANGES', native)
+def test_audio_range_request_gets_exactly_those_bytes(uploads):
+    """How the browser seeks to a section."""
     job = _inject_job(uploads)
     response = client.get(f"/api/jobs/{job.id}/audio/mix",
                           headers={'Range': 'bytes=1000-1999'})

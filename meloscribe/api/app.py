@@ -346,7 +346,8 @@ def job_audio(job_id: str, source: str, request: Request):
     if path is None:
         raise HTTPException(status_code=404,
                             detail=f"No {source!r} audio for this job")
-    return audio_response(path, request.headers.get('range'))
+    return audio_response(path, request.headers.get('range'),
+                          if_range=request.headers.get('if-range'))
 
 
 def _attachment(filename: str) -> Dict[str, str]:
