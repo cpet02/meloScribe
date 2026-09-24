@@ -60,6 +60,22 @@ def test_silence_fuzz_case_yields_no_notes(tmp_path):
 # Regression tests for bugs the stress run found
 # --------------------------------------------------------------------------
 
+def test_breaking_points_are_found_on_both_sides_of_the_easy_setting():
+    """register is two-sided: the easy octave sits in the middle of the list.
+    Read from the first point only, the high-register failure never showed."""
+    def rows(axis, f1s):
+        return [{'axis': axis, 'system': 'ensemble', 'label': f'p{k}', 'f1': f}
+                for k, f in enumerate(f1s)]
+    bp = stress.breaking_points(rows('register', [0.6, 1, 1, 1, 0.5, 0.3])
+                                + rows('one_sided', [1, 1, 0.8, 0.5])
+                                + rows('robust', [1, 1, 1]))
+    assert bp['register']['lt0.9'] == [('p4', 'p3'), ('p0', 'p1')]
+    assert bp['register']['lt0.7'] == [('p4', 'p3'), ('p0', 'p1')]
+    assert bp['one_sided']['lt0.9'] == [('p2', 'p1')]
+    assert bp['one_sided']['lt0.7'] == [('p3', 'p2')]
+    assert bp['robust']['lt0.9'] == [(None, 'p2')]
+
+
 def test_a_truncated_mp3_is_judged_on_what_decodes(tmp_path):
     """Its Xing header still claims the whole song (2.9 s, of which 1.39 s
     decodes), so judging against the header expected notes that are not in
