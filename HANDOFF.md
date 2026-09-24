@@ -391,6 +391,58 @@ audio for playback from `/api/jobs/{id}/audio/{mix|vocals}`).
 - All thresholds are judgement calls tested on synthetic layouts only; tune
   them against real songs.
 
+## Sheet music (MusicXML)
+
+`--format musicxml` / `--musicxml out.musicxml`, API `download/musicxml`, UI
+"Sheet music". `notation.py` quantises; `musicxml.py` writes MusicXML 4.0 with
+ElementTree (valid against the official 4.0 XSD; imports cleanly in MuseScore
+3.2.3, checked by rendering). Nothing else is quantised - every other output
+keeps the performed timing, and `rhythm`'s "never edits" rule is untouched.
+`--midi --quantize` writes MIDI from the same quantisation.
+
+Measured with `python -m meloscribe.eval.notation_eval` (fraction of written
+notes that come back with exactly the written position *and* value; 12
+melodies written in beats, 135 notes, swing excluded):
+
+| grid | clean | +25ms jitter |
+|---|---|---|
+| true tempo/phase (quantiser alone) | 0.99 | 0.91 |
+| tracked from the audio (real path) | 0.93 | 0.82 |
+| fallback: tempo from note spacing | 0.58 | 0.15 |
+
+On `rhythm_eval`'s six non-swing metrical cases (89 notes) the tracked grid
+scores 1.00 clean and 0.91 at +25ms, and the pitch engine's own notes from
+the rendered audio (`--transcribe`) come out 0.98 exactly as written.
+
+Decisions:
+
+1. **The tracked grid is regularised before snapping.** On the metrical cases
+   librosa's beats lag the click by 10-37ms and wobble by up to 178ms (a
+   melody note pulls them). A local linear fit over +/-8 beats keeps drift and
+   removes wobble; `rhythm.analyse` then fits phase and binary/ternary feel.
+2. **Triplets per beat, against a per-track prior.** Log-likelihood of the
+   beat's onsets under triplet-eighths vs sixteenths (25ms jitter model); a
+   straight track needs log-odds > 2. Clean: 4 of 5 triplet beats, 0
+   invented; at +25ms, 30 of 50 found, 10 invented - it is conservative by
+   design, and a lone triplet-quarter figure in a straight song stays in
+   sixteenths.
+3. **Onsets are assigned by DP, never merged**, so the minimum value (one grid
+   step) holds without dropping a note.
+4. **Ends are soft.** Gaps < 0.375 beat are absorbed (legato); a note before a
+   real rest is stretched by the track's release (total written / total
+   sounding length over its legato notes). `rhythm`'s duty estimate was tried
+   first and gave up under jitter, which rounded early-released quarters to
+   dotted eighths.
+5. **No meter or downbeat detection**: rhythm.py has neither. 4/4 and bar 1 on
+   the melody's first beat unless `--time-signature 3/4` / `--pickup N`. An
+   accent-based downbeat was not attempted: a backbeat puts the loudest
+   onsets on 2 and 4, and nothing here could show a heuristic gets past that.
+
+Known gaps: swing comes out literally (quarter-eighth triplets), not as
+"swing 8ths"; the tracked-grid losses (ties/dotted cases) are drift at the
+tail of a short clip, not the quantiser; key.py names Gb major's fourth `B`,
+so it prints as B natural under a six-flat signature.
+
 ## Working agreements
 
 - Numbers before claims: run the harness before and after, and report the delta.

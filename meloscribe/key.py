@@ -72,6 +72,18 @@ class KeyEstimate:
         return 'flat' if relative_major in FLAT_MAJOR_TONICS else 'sharp'
 
     @property
+    def fifths(self) -> int:
+        """The key signature as notation counts it: sharps positive, flats
+        negative (MusicXML's <fifths>). Each fifth up the circle adds a sharp,
+        and 7 is its own inverse mod 12, so the relative major's pitch class
+        times 7 is its place on the circle; `spelling` decides which side of
+        the circle the enharmonic keys sit on, so this always agrees with the
+        note names."""
+        relative_major = self.tonic if self.is_major else (self.tonic + 3) % 12
+        sharps = (7 * relative_major) % 12
+        return sharps - 12 if self.spelling == 'flat' else sharps
+
+    @property
     def pitch_names(self) -> Tuple[str, ...]:
         """What this key calls each pitch class, index = pitch class.
 
@@ -131,6 +143,15 @@ def note_names(key: Optional[KeyEstimate],
     `note_spelling`, so the table and the flag cannot disagree."""
     written = _spelling_key(key, transpose)
     return written.pitch_names if written else SPELLINGS['sharp']
+
+
+def signature_key(key: Optional[KeyEstimate],
+                  transpose: int = 0) -> Optional[KeyEstimate]:
+    """The key a score of those notes shows as its key signature: the one
+    they are spelled in, or None when they are spelled with plain sharps
+    because no key was trusted - a signature must never contradict the
+    names under it."""
+    return _spelling_key(key, transpose)
 
 
 def _spelling_key(key: Optional[KeyEstimate],

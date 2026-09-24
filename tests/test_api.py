@@ -346,3 +346,24 @@ def test_audio_of_an_unfinished_job_conflicts(uploads):
     job = _inject_job(uploads, status=JobStatus.RUNNING)
     assert client.get(f"/api/jobs/{job.id}/audio/mix").status_code == 409
     assert client.get('/api/jobs/deadbeef/audio/mix').status_code == 404
+
+
+def test_musicxml_download_is_sheet_music(uploads):
+    """Sheet music from a finished job. The upload here is not decodable
+    audio, so there is no beat to track: the export must still succeed, on
+    the note spacing, and say in the score that its rhythm is approximate."""
+    import xml.etree.ElementTree as ET
+
+    job = _inject_job(uploads, transpose=9)
+    response = client.get(f"/api/jobs/{job.id}/download/musicxml")
+    assert response.status_code == 200, response.text
+    assert response.headers['content-type'] == \
+        'application/vnd.recordare.musicxml+xml'
+    assert response.headers['content-disposition'].endswith('.musicxml"')
+    root = ET.fromstring(response.content)
+    assert root.tag == 'score-partwise'
+    assert root.find('.//transpose/chromatic').text == '-9'
+    assert root.find('.//miscellaneous-field').text == 'approximate'
+    # Line-level lyrics: each line's text where its first note starts.
+    words = [w.text for w in root.iter('words')]
+    assert 'first line' in words and 'second line' in words

@@ -14,15 +14,18 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
+                               Response)
 from pydantic import BaseModel, Field
 
 from .. import __version__
 from ..lyrics.lrclib import (LrcLibClient, LrcLibError, TrackQuery,
                              describe_track)
 from ..lyrics.service import LyricsMode
+from ..musicxml import EXTENSION as MUSICXML_EXTENSION
+from ..musicxml import MEDIA_TYPE as MUSICXML_MEDIA_TYPE
 from ..output import format_csv, format_json, format_leadsheet, format_lrc, \
-    format_table, write_midi
+    format_table, musicxml_for_output, score_for_output, write_midi
 from ..pipeline import Pipeline, TranscriptionRequest
 from ..sections import sections_for_output
 from ..stems import best_device
@@ -348,6 +351,21 @@ def download(job_id: str, fmt: str):
             raise HTTPException(status_code=501, detail=str(exc))
         return FileResponse(path, filename=f"{title}.mid",
                             media_type='audio/midi')
+
+    if fmt == 'musicxml':
+        # Quantised against the grid the rhythm stage tracked, or one tracked
+        # now from the upload (cached, so a second download is instant), or
+        # the note spacing - in which case the score itself says so.
+        score = score_for_output(job.result,
+                                 audio_path=_audio_sources(job).get('mix'))
+        body = musicxml_for_output(
+            job.result, score, title=job.params.get('track_name', ''),
+            artist=job.params.get('artist_name', ''),
+            transpose=int(job.params.get('transpose') or 0))
+        return Response(
+            body, media_type=MUSICXML_MEDIA_TYPE,
+            headers={'Content-Disposition': f'attachment; filename="{title}.'
+                                            f'{MUSICXML_EXTENSION}"'})
 
     renderers = {
         'table': lambda: format_table(notes),
