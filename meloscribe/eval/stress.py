@@ -1017,8 +1017,12 @@ def run_fuzz_case(name: str, out_dir: Path, entries: Sequence[str] = ENTRIES,
 
         def on_alarm(signum, frame):
             raise _Timeout(f"no result after {timeout_s}s")
-        previous = signal.signal(signal.SIGALRM, on_alarm)
-        signal.alarm(timeout_s)
+        # SIGALRM is POSIX-only. On Windows a case runs without the timeout,
+        # so a hang stalls the run instead of being reported as HANG.
+        alarm = hasattr(signal, 'SIGALRM')
+        if alarm:
+            previous = signal.signal(signal.SIGALRM, on_alarm)
+            signal.alarm(timeout_s)
         try:
             got, meta = _entry(entry, path, voters)
             row.update(meta)
@@ -1042,8 +1046,9 @@ def run_fuzz_case(name: str, out_dir: Path, entries: Sequence[str] = ENTRIES,
                 where=[f"{Path(fr.filename).name}:{fr.lineno} {fr.name}"
                        for fr in tb[-4:]])
         finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, previous)
+            if alarm:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, previous)
         row['seconds'] = round(time.perf_counter() - t0, 1)
         rows.append(row)
     return rows
@@ -1097,7 +1102,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     fz = sub.add_parser('fuzz', help='hostile inputs through the real entry points')
     fz.add_argument('--case', help='comma list (default: all)')
     fz.add_argument('--entries', default=','.join(ENTRIES))
-    fz.add_argument('--timeout', type=int, default=300)
+    fz.add_argument('--timeout', type=int, default=300,
+                    help='seconds before a case is reported as HANG '
+                         '(POSIX only: ignored on Windows)')
     fz.add_argument('--out', default=str(DEFAULT_OUT))
     fz.add_argument('--tag', default='fuzz')
     sub.add_parser('list', help='list axes and fuzz cases')
