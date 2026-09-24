@@ -73,11 +73,15 @@ Where to measure, with before/after for every change (decision 1):
     venv/Scripts/python -m meloscribe.eval.stress fuzz
 
 **Realistic songs, the MP3 path end to end** (`meloscribe/eval/realistic.py`):
-10 generated songs - a real human voice (a CMU ARCTIC recording fetched from
-the `pysptk` sdist on PyPI) re-pitched with WORLD to known melodies with
-vibrato, scoops, breaths, rap and instrumental breaks, backing harmonies, over
-a band, encoded to MP3 - so the truth is exact. It needs `pip install pyworld`
-(its test skips without it). The cloud CPU scored only one case before its
+18 generated songs - a real human voice (the CMU ARCTIC recording pysptk ships
+as example data) re-pitched with WORLD to known melodies with vibrato, scoops,
+breaths, rap and instrumental breaks, backing harmonies, over a band, encoded
+to MP3 - so the truth is exact. It needs `pip install pyworld` (its test skips
+without it) and, for the real voice, `pip install pysptk` or
+`MELOSCRIBE_VOICE_WAV`: nothing is downloaded automatically any more (it used
+to `pip download` pysptk's sdist, unpinned, which runs its build code), and
+without a voice `generate` falls back to a far less realistic formant voice
+with a warning. The cloud CPU scored only one case before its
 run hung (CREPE ran at ~12x real time): `breaths_close_m`, ensemble note F1
 0.667 vs basic-pitch 0.283, losing to late onsets, merged notes and wrong
 pitch about equally. The full matrix is minutes on the GPU:

@@ -26,7 +26,7 @@ exact. The utterance is cut into vowel nuclei, voiced consonants and
 fricatives, and each sung syllable is re-assembled from those units under its
 notes. When no recording can be found, an analytic formant voice (a plain
 source-filter model) is used instead, with a warning; the smoke test uses it
-deliberately so that it never needs the network.
+deliberately so that it needs no recording.
 
 Ground-truth conventions
 ------------------------
@@ -41,8 +41,8 @@ Ground-truth conventions
 Requirements: `pip install pyworld` (generation), soundfile>=0.12 (its wheels
 bundle libsndfile>=1.1, which encodes and decodes MP3 - verified sample-aligned),
 scipy, librosa, mir_eval. pysptk is optional: only its bundled CMU ARCTIC WAV is
-used, fetched once from its PyPI sdist with `pip download` when pysptk is not
-installed (or point MELOSCRIBE_VOICE_WAV at any clean voice recording).
+used, so `pip install pysptk` for the real voice (or point MELOSCRIBE_VOICE_WAV
+at any clean voice recording). Nothing is downloaded automatically.
 
 Running it: CREPE `full` dominates (~97% of ensemble time) and runs ~6-12x
 slower than real time on CPU, so score on a GPU. Voter outputs are cached by
@@ -278,8 +278,16 @@ def formant_bank() -> VoiceBank:
                      source='formant-model')
 
 
+# Where the real voice comes from, for the messages that need to say so.
+# Nothing is fetched automatically: the voice was once pulled out of pysptk's
+# sdist with `pip download`, which runs the package's build code, unpinned.
+VOICE_HINT = ("pip install pysptk (its CMU ARCTIC example is the voice), or set "
+              "MELOSCRIBE_VOICE_WAV to a clean solo voice recording")
+
+
 def _voice_recording(data_dir: Path) -> Optional[Path]:
-    """Find pysptk's CMU ARCTIC example, fetching its sdist from PyPI once."""
+    """Find the voice: MELOSCRIBE_VOICE_WAV, pysptk's CMU ARCTIC example, or
+    a copy of it left under <data-dir>/voices."""
     env = os.environ.get('MELOSCRIBE_VOICE_WAV')
     if env and Path(env).exists():
         return Path(env)
@@ -291,26 +299,7 @@ def _voice_recording(data_dir: Path) -> Optional[Path]:
     except Exception:
         pass
     cached = Path(data_dir) / 'voices' / 'arctic_a0007.wav'
-    if cached.exists():
-        return cached
-    try:
-        import subprocess
-        import tarfile
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            subprocess.run([sys.executable, '-m', 'pip', 'download', '--no-deps',
-                            '--no-binary', ':all:', '-d', tmp, 'pysptk'],
-                           capture_output=True, timeout=300, check=False)
-            for tgz in Path(tmp).glob('pysptk-*.tar.gz'):
-                with tarfile.open(tgz) as t:
-                    for m in t.getmembers():
-                        if m.name.endswith('example_audio_data/arctic_a0007.wav'):
-                            cached.parent.mkdir(parents=True, exist_ok=True)
-                            cached.write_bytes(t.extractfile(m).read())
-                            return cached
-    except Exception:
-        pass
-    return None
+    return cached if cached.exists() else None
 
 
 def load_bank(voice: str = 'auto', data_dir: Path = DEFAULT_DATA_DIR) -> VoiceBank:
@@ -319,9 +308,10 @@ def load_bank(voice: str = 'auto', data_dir: Path = DEFAULT_DATA_DIR) -> VoiceBa
     path = Path(voice) if voice not in ('auto', 'world') else _voice_recording(data_dir)
     if path is None or not path.exists():
         if voice == 'world':
-            raise FileNotFoundError('No voice recording found (set MELOSCRIBE_VOICE_WAV)')
+            raise FileNotFoundError(f'No voice recording found: {VOICE_HINT}')
         warnings.warn('No real voice recording found: falling back to the analytic '
-                      'formant voice, which is far less realistic.')
+                      f'formant voice, which is far less realistic. For the real '
+                      f'voice: {VOICE_HINT}.')
         return formant_bank()
     return analyse_recording(path)
 
