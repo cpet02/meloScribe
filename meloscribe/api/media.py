@@ -30,6 +30,12 @@ from starlette.responses import Response, StreamingResponse
 
 CHUNK_SIZE = 64 * 1024
 
+# The formats uploads come in. mimetypes alone differs by machine: on Windows
+# it reads the registry, which calls '.aac' 'audio/vnd.dlna.adts'.
+AUDIO_TYPES = {'.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.flac': 'audio/flac',
+               '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.opus': 'audio/ogg',
+               '.aac': 'audio/aac'}
+
 # One range; `bytes=a-b`, `bytes=a-` or `bytes=-n`. Several ranges at once
 # are legal but no browser seeks that way, so they get the whole file.
 _BYTE_RANGE = re.compile(r'^\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*$', re.IGNORECASE)
@@ -44,8 +50,8 @@ def audio_response(path, range_header: Optional[str] = None,
     it names the file as it is now, or a client resuming a download could
     stitch bytes of two different files together.
     """
-    media_type = (media_type or mimetypes.guess_type(str(path))[0]
-                  or 'application/octet-stream')
+    media_type = (media_type or AUDIO_TYPES.get(os.path.splitext(str(path))[1].lower())
+                  or mimetypes.guess_type(str(path))[0] or 'application/octet-stream')
     stat = os.stat(path)
     size = stat.st_size
     validators = _validators(stat)

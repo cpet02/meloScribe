@@ -145,6 +145,16 @@ def test_a_file_deleted_mid_response_ends_it(audio):
     assert list(chunks) == []
 
 
+@pytest.mark.parametrize('suffix,expected', [
+    ('.mp3', 'audio/mpeg'), ('.WAV', 'audio/wav'), ('.flac', 'audio/flac'),
+    ('.m4a', 'audio/mp4'), ('.opus', 'audio/ogg'), ('.aac', 'audio/aac')])
+def test_every_upload_format_gets_the_same_type_on_every_machine(tmp_path, suffix,
+                                                                expected):
+    path = tmp_path / f'song{suffix}'
+    path.write_bytes(b'\0' * 10)
+    assert media.audio_response(path).media_type == expected
+
+
 def test_range_parsing():
     assert media.parse_range('bytes=0-0', 10) == (0, 0)
     assert media.parse_range('Bytes = 2 - 4', 10) == (2, 4)
