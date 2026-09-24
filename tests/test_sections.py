@@ -330,6 +330,28 @@ def test_a_repeated_block_is_a_chorus():
     assert [p.repeat_of for p in result.parts] == [None, None, None, 1, None, 1]
 
 
+def test_singing_past_a_line_end_does_not_hide_the_chorus():
+    # Forced alignment ends a line at its last word, so a held last syllable
+    # becomes a 'No lyric' section inside the chorus. A chorus is a repeated
+    # run of lyric lines, and that section must not break the run.
+    texts = ['verse one', 'verse two', 'chorus a', 'chorus b', 'verse three',
+             'verse four', 'chorus a', 'chorus b', 'outro']
+    notes, lines, t = [], [], 0.0
+    for k, text in enumerate(texts):
+        lines.append(_line(t, text, end=t + 1.8))
+        notes.append(_note(t, t + 1.7))
+        if k == 2:
+            notes += [_note(t + 1.85, t + 2.2), _note(t + 2.2, t + 2.6)]
+            t += 1.0
+        t += 2.5
+    result = S.build_sections(notes, lines)
+    assert [p.text for p in result.parts] == [
+        'verse one / verse two', 'chorus a / chorus b',
+        'verse three / verse four', 'chorus a / chorus b', 'outro']
+    assert [p.repeat_of for p in result.parts] == [None, None, None, 1, None]
+    _assert_partition(result, len(notes))
+
+
 def test_one_repeated_line_is_not_structure():
     notes, lines = _song(['hook', 'a', 'b', 'hook', 'c'])
     result = S.build_sections(notes, lines)

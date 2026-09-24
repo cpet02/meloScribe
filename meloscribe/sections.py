@@ -24,7 +24,6 @@ rather than being dropped.
 
 from __future__ import annotations
 
-import bisect
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Set, Tuple
@@ -428,10 +427,11 @@ def _lyric_part_cuts(notes, lines: List[Section], lyric: List[int]) -> Set[int]:
               if lines[b].start - lines[a].end >= PART_BREAK}
     # Repeated blocks of lyric are structure: each occurrence of a repeated
     # run of lines starts a part, and the line after it starts the next one.
-    texts = [_normalise(s.text) if s.kind == 'lyric' else None for s in lines]
+    # The runs are of lyric lines only, so a wordless section inside a block
+    # (a held last syllable, an ad-lib) cannot break it.
+    texts = [_normalise(lines[i].text) for i in lyric]
     for a, b, length in _repeated_runs(texts):
-        for cut in (a, a + length, b, b + length):
-            k = bisect.bisect_left(lyric, cut)
+        for k in (a, a + length, b, b + length):
             if 0 < k < len(lyric):
                 starts.add(lyric[k])
 
