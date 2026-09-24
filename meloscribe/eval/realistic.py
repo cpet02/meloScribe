@@ -1793,6 +1793,24 @@ def _pitch_code_hash() -> str:
     return h.hexdigest()[:16]
 
 
+def _row_key(code: str, truth: 'Truth', path: str) -> str:
+    """Everything a saved row was scored from: the pitch code (`code`), the
+    scoring code, the case's truth and the audio the system heard on `path`.
+    A row is resumed only if all of it is unchanged - checking the pitch code
+    alone reused rows scored on a case since regenerated (with the real voice
+    after the formant fallback, say)."""
+    h = hashlib.sha1(code.encode())
+    here = Path(__file__)
+    for module in (here, here.with_name('metrics.py'), here.with_name('groundtruth.py')):
+        h.update(module.read_bytes())
+    h.update((truth.case_dir / 'truth.json').read_bytes())
+    audio = truth.audio(path)
+    if audio.exists():
+        stat = audio.stat()
+        h.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode())
+    return h.hexdigest()[:16]
+
+
 _WORKER_SYSTEMS: Dict[str, object] = {}
 
 
@@ -1874,12 +1892,13 @@ def run_scoring(systems: Sequence[str], paths: Sequence[str], data_dir: Path,
                             for s in systems for t in truths),
                            key=lambda task: -durations[task[2]])
             done: Dict[Tuple[str, str], Tuple[Dict, Dict]] = {}
+            keys = {t.name: _row_key(code, t, path) for t in truths}
             todo = []
             for task in tasks:
                 saved = out_dir / 'rows' / path / task[1] / f'{task[2]}.json'
                 if resume and saved.exists():
                     rec = json.loads(saved.read_text(encoding='utf-8'))
-                    if rec.get('code') == code:
+                    if rec.get('key') == keys[task[2]]:
                         done[(task[1], task[2])] = (rec['row'], rec['stages'])
                         continue
                 todo.append(task)
@@ -1893,7 +1912,8 @@ def run_scoring(systems: Sequence[str], paths: Sequence[str], data_dir: Path,
                 saved = out_dir / 'rows' / path / sysname / f'{case_name}.json'
                 saved.parent.mkdir(parents=True, exist_ok=True)
                 tmp = saved.with_name(saved.name + '.tmp')
-                tmp.write_text(json.dumps({'code': code, 'row': row, 'stages': stages},
+                tmp.write_text(json.dumps({'code': code, 'key': keys[case_name],
+                                           'row': row, 'stages': stages},
                                           default=float), encoding='utf-8')
                 os.replace(tmp, saved)
                 if verbose:

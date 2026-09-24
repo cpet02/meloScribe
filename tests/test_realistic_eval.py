@@ -68,6 +68,29 @@ def test_a_case_made_with_another_voice_is_regenerated(tmp_path):
     assert other.source == 'arctic_a0007.wav'
 
 
+def test_resume_rescores_a_case_that_was_regenerated(tmp_path):
+    """`score --resume` reused a saved row whenever the pitch code was
+    unchanged - even for a case regenerated since, whose audio it no longer
+    describes."""
+    import json
+    from dataclasses import replace
+
+    name = R.SMOKE_CASE['name']
+    saved = tmp_path / 'results' / 'rows' / 'clean' / 'oracle' / f'{name}.json'
+
+    def resume():
+        R.run_scoring(['oracle'], ['clean'], tmp_path, cases=[name],
+                      out_dir=tmp_path / 'results', verbose=False, resume=True)
+        return json.loads(saved.read_text(encoding='utf-8'))
+
+    R.generate_case(R.SMOKE_CASE, tmp_path, bank=R.formant_bank())
+    first = resume()
+    assert resume() == first                  # nothing changed: reused
+    R.generate_case(R.SMOKE_CASE, tmp_path,
+                    bank=replace(R.formant_bank(), source='arctic_a0007.wav'))
+    assert resume()['key'] != first['key']    # regenerated: scored again
+
+
 def test_truth_f0_is_what_was_sung(smoke):
     """WORLD must reproduce the imposed f0, or the truth is fiction."""
     import librosa
