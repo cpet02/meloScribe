@@ -236,6 +236,21 @@ def test_rest_markers_do_not_shift_aligned_words():
                                                   ('three four', 5.0)]
 
 
+def test_symbols_inside_a_line_do_not_shift_aligned_words():
+    """The aligner drops '♪', a lone '-', '[Chorus]' and digits, and splits
+    'rock-n-roll'. Counting a line's words by spaces instead took the next
+    line's words for this one and lost the last line."""
+    from meloscribe.lyrics.service import _lines_from_words
+
+    lines = parse_lrc('[00:01.00]♪ one two ♪\n[00:03.00]three - four\n'
+                      '[00:05.00][Chorus] rock-n-roll\n[00:07.00]five six')
+    sung = ['one', 'two', 'three', 'four', 'rock', 'n', 'roll', 'five', 'six']
+    words = [LyricWord(w, 1.0 + k, 1.5 + k) for k, w in enumerate(sung)]
+    timed = _lines_from_words(words, lines)
+    assert [[w.text for w in l.words] for l in timed] == [
+        ['one', 'two'], ['three', 'four'], ['rock', 'n', 'roll'], ['five', 'six']]
+
+
 def test_refine_keeps_rest_marker_ends_and_recomputes_the_rest():
     lines = parse_lrc('[00:10.00]First\n[00:13.00]\n[00:20.00]Second\n'
                       '[00:24.00]Third')

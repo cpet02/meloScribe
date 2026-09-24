@@ -240,7 +240,10 @@ def _lines_from_words(words, original_lines: List[LyricLine]) -> List[LyricLine]
     lines: List[LyricLine] = []
     cursor = 0
     for line in original_lines:
-        count = len(line.word_texts)
+        # Counted the way the aligner tokenised the text: it drops '♪', a
+        # lone '-', '[Chorus]' and digits, and splits 'rock-n-roll'. Counting
+        # by spaces handed each line after such a symbol its neighbour's words.
+        count = len(ForcedAligner._normalise(line.text))
         if count == 0 or cursor >= len(words):
             continue
         span = words[cursor:cursor + count]
