@@ -4,14 +4,16 @@ Paste this into a new chat to continue work.
 
 ---
 
-## Merged 2026-09-24: `main-ob0jw0` (a1d3f1d)
+## Merged 2026-09-24: `main-ob0jw0` (a1d3f1d), then `review-followups` (0043328)
 
-Reviewed on this machine (GPU, real separation) before merging: the test
-suite and the core benchmark unchanged - the benchmark is now also
-deterministic run to run - with eight fixes made during review. Branches are
-reviewed and merged with **`/merge-review`** (`.claude/agents/merge-reviewer.md`).
+`main-ob0jw0` was reviewed on this machine (GPU, real separation) before
+merging: the test suite and the core benchmark unchanged - the benchmark is
+now also deterministic run to run - with eight fixes made during review.
+Branches are reviewed and merged with **`/merge-review`**
+(`.claude/agents/merge-reviewer.md`). Nothing is pending review.
 
-**Pending review: `review-followups`**, the review's open findings: upload ids
+**`review-followups`** (merged after an independent review of its own, whose
+two findings it also fixes): the review's open findings - upload ids
 are pattern-checked before any filesystem access (Windows device names, UNC
 paths) and CORS allows local origins only; the audio endpoint no longer holds
 files open, which broke re-separation on Windows while a stem was playing;
