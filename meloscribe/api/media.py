@@ -66,7 +66,7 @@ def audio_response(path, range_header: Optional[str] = None,
     if span is None:
         # No range, a malformed one (ignoring Range is always allowed), or a
         # stale If-Range.
-        return StreamingResponse(_read(path, 0, size), media_type=media_type,
+        return StreamingResponse(_read(path, 0, size, stat), media_type=media_type,
                                  headers={**headers, 'Content-Length': str(size)})
     if span == ():
         return Response(status_code=416,
@@ -74,7 +74,7 @@ def audio_response(path, range_header: Optional[str] = None,
 
     start, end = span
     return StreamingResponse(
-        _read(path, start, end - start + 1), status_code=206,
+        _read(path, start, end - start + 1, stat), status_code=206,
         media_type=media_type,
         headers={**headers, 'Content-Range': f"bytes {start}-{end}/{size}",
                  'Content-Length': str(end - start + 1)})
@@ -114,20 +114,32 @@ def _validators(stat: os.stat_result) -> Dict[str, str]:
             'Last-Modified': formatdate(stat.st_mtime, usegmt=True)}
 
 
-def _read(path, start: int, length: int) -> Iterator[bytes]:
+def _read(path, start: int, length: int,
+          served: Optional[os.stat_result] = None) -> Iterator[bytes]:
     """Bytes [start, start + length) of `path`, a chunk at a time.
 
     The file is open only while a chunk is read, never while the chunk waits
-    for the client to take it (see the module docstring). A file deleted
-    mid-response ends it short, and the client asks again.
+    for the client to take it (see the module docstring). Reopened by name,
+    it may meanwhile have been deleted or replaced - re-separation renames
+    new stems into place - so each chunk is checked against `served`, the
+    file the response's headers describe, and the response ends short
+    rather than splice the new file's bytes under the old one's ETag and
+    length. The client asks again, and If-Range sorts out which file it gets.
     """
     position = start
     while length > 0:
         try:
             with open(path, 'rb') as handle:
+                if served is not None:
+                    now = os.fstat(handle.fileno())
+                    if (now.st_size, now.st_mtime_ns) != (served.st_size,
+                                                          served.st_mtime_ns):
+                        return
                 handle.seek(position)
                 chunk = handle.read(min(CHUNK_SIZE, length))
-        except FileNotFoundError:
+        except OSError:
+            # Deleted (FileNotFoundError), or being deleted on Windows
+            # (PermissionError): end it here as well.
             return
         if not chunk:
             return

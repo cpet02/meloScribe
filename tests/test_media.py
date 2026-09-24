@@ -138,6 +138,26 @@ def test_a_response_mid_send_does_not_hold_the_file(audio):
     assert asyncio.run(client_that_stops_reading()) == DATA[:media.CHUNK_SIZE]
 
 
+def test_a_file_replaced_mid_response_is_not_spliced_into_it(audio):
+    """Re-separation renames a new stem into place. Reopened by name for
+    each chunk, the response carried on with the new file's bytes under the
+    old file's ETag and length; it must end instead, so the client asks
+    again and If-Range decides."""
+    response = media.audio_response(audio, 'bytes=0-')
+
+    async def client_that_keeps_reading():
+        body, got = response.body_iterator, []
+        got.append(await body.__anext__())
+        replacement = audio.with_name('new.wav')
+        replacement.write_bytes(os.urandom(SIZE))
+        os.replace(replacement, audio)
+        async for chunk in body:
+            got.append(chunk)
+        return got
+
+    assert asyncio.run(client_that_keeps_reading()) == [DATA[:media.CHUNK_SIZE]]
+
+
 def test_a_file_deleted_mid_response_ends_it(audio):
     chunks = media._read(audio, 0, SIZE)
     assert next(chunks) == DATA[:media.CHUNK_SIZE]
