@@ -236,6 +236,34 @@ def test_rest_markers_do_not_shift_aligned_words():
                                                   ('three four', 5.0)]
 
 
+def test_a_bracket_spanning_lines_does_not_shift_aligned_words():
+    """Tokenised as one string, '[yeah' ... 'baby]' was stripped as a single
+    stage direction across the line break, while each line was counted on
+    its own - so every later line got its neighbour's words."""
+    from meloscribe.lyrics.align import ForcedAligner
+    from meloscribe.lyrics.service import (LyricsMode, LyricsOutcome,
+                                           LyricsService)
+
+    class FakeAligner:
+        """Tokenises the text it is given as the real one does, and times
+        one word per token."""
+        def available(self):
+            return True
+
+        def align(self, path, text):
+            return [LyricWord(w, k, k + 0.5, confidence=0.9)
+                    for k, w in enumerate(ForcedAligner._normalise(text))]
+
+    lines = parse_lrc('[00:00.00]oh [yeah\n[00:02.00]baby] come on\n'
+                      '[00:05.00]last line here')
+    outcome = LyricsOutcome(lyrics=TimedLyrics(lines=lines),
+                            mode=LyricsMode.ALIGN, tier='lrclib-synced')
+    timed = LyricsService(aligner=FakeAligner())._improve_timing(
+        'vocals.wav', outcome, None)
+    assert [[w.text for w in l.words] for l in timed.lyrics.lines] == [
+        ['oh', 'yeah'], ['baby', 'come', 'on'], ['last', 'line', 'here']]
+
+
 def test_symbols_inside_a_line_do_not_shift_aligned_words():
     """The aligner drops '♪', a lone '-', '[Chorus]' and digits, and splits
     'rock-n-roll'. Counting a line's words by spaces instead took the next

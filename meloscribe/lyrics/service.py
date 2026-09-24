@@ -143,7 +143,12 @@ class LyricsService:
     def _improve_timing(self, vocals_path, outcome: LyricsOutcome,
                         progress: Optional[ProgressFn]) -> LyricsOutcome:
         """Upgrade whatever timings we have, as far as the tools allow."""
-        text = ' '.join(line.text for line in outcome.lyrics.lines)
+        # Tokenised line by line, exactly as _lines_from_words counts them:
+        # tokenised as one string, a '[' on one line and a ']' on a later
+        # one were stripped as a single bracket across the line break, and
+        # every line after it was given its neighbour's words.
+        text = ' '.join(' '.join(ForcedAligner._normalise(line.text))
+                        for line in outcome.lyrics.lines)
 
         if self.aligner.available() and text.strip():
             if progress:
