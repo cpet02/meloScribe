@@ -72,6 +72,23 @@ Where to measure, with before/after for every change (decision 1):
     venv/Scripts/python -m meloscribe.eval.stress sweep --axis all --systems ensemble
     venv/Scripts/python -m meloscribe.eval.stress fuzz
 
+**Realistic songs, the MP3 path end to end** (`meloscribe/eval/realistic.py`):
+10 generated songs - a real human voice (a CMU ARCTIC recording fetched from
+the `pysptk` sdist on PyPI) re-pitched with WORLD to known melodies with
+vibrato, scoops, breaths, rap and instrumental breaks, backing harmonies, over
+a band, encoded to MP3 - so the truth is exact. It needs `pip install pyworld`
+(its test skips without it). The cloud CPU scored only one case before its
+run hung (CREPE ran at ~12x real time): `breaths_close_m`, ensemble note F1
+0.667 vs basic-pitch 0.283, losing to late onsets, merged notes and wrong
+pitch about equally. The full matrix is minutes on the GPU:
+
+    venv/Scripts/python -m meloscribe.eval.realistic generate
+    venv/Scripts/python -m meloscribe.eval.realistic score --systems ensemble,basic_pitch --path clean,proxy,demucs
+    venv/Scripts/python -m meloscribe.eval.realistic analyse
+
+`demucs` runs the real separator on the MP3 mix - the only path that measures
+what users actually get.
+
 Real annotated data could not be downloaded in the cloud session (zenodo and
 huggingface were blocked); locally it can. The full vocadito corpus (40 solo
 tracks, CC BY, zenodo record 5578807) converts with
@@ -203,15 +220,17 @@ beat tracking adds ~4s and is cached.
   was exercised, on an instrumental, so `MIN_ALIGNMENT_CONFIDENCE = 0.15` is
   uncalibrated. If it fires on a song that obviously matches its lyrics, it is
   too aggressive.
-- **No real annotated audio has been scored.** The synthetic set is a
+- **Only one real annotated track has been scored** (vocadito_1, note F1
+  0.537 - see "Next: accuracy work" above). The synthetic set is a
   regression detector and failure-mode probe, not a substitute. Drop
   `audio.wav` + `audio.csv` (`time,frequency`) pairs in a folder and run
   `--dataset <folder>`; vocadito and MedleyDB use that layout.
-- **HPSS denoising is off by default** (measured neutral-to-harmful) — but the
-  synthetic set has no percussive bleed, which is the only thing HPSS removes.
-  Untested on real stems.
-- **Backing-vocal bleed** (harmonies leaking into the vocal stem) is not
-  modelled in the benchmark at all and is a likely real-world failure.
+- **HPSS denoising is off by default**, and now measured harmful even on the
+  drum-bleed cases of `--suite hard` (note F1@25 0.811 -> 0.523). It also
+  never reaches basic-pitch, which re-reads the original file. Untested on
+  real stems.
+- **Backing-vocal bleed** is now modelled (`--suite hard`), and a harmony at
+  or above the lead's level still wins (see "Next: accuracy work", item 4).
 - Beat/tempo tracking exists only in the **legacy** `pipeline/beat_tracker.py`
   and was not carried into `meloscribe/`.
 - The web UI does not expose `--device`.
