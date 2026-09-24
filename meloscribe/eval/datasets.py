@@ -194,6 +194,11 @@ def convert_medleydb_melody(src, dst, definition: int = 2,
     over to an instrument for a solo, which is what the corpus defines as
     melody - so a vocal transcriber is expected to lose some frames here.
     """
+    if definition not in (1, 2):
+        # MELODY3 gives every melodic line its own column. One f0 track per
+        # song cannot hold that, and keeping the first column was wrong.
+        raise ValueError(f"MedleyDB melody definition {definition} is not a "
+                         f"single line; use 1 or 2")
     src, dst = Path(src), Path(dst)
     dst.mkdir(parents=True, exist_ok=True)
     meta_path = src / 'medleydb_melody_metadata.json'

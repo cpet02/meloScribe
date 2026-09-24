@@ -125,6 +125,12 @@ def test_tonas_applies_tuning_offset(tmp_path):
     assert truth.freqs.tolist() == pytest.approx([0.0, 379.3])  # corrected column
 
 
+def test_medleydb_refuses_the_multi_line_melody_definition(tmp_path):
+    # MELODY3 has a column per melodic line; only the first was kept.
+    with pytest.raises(ValueError, match='not a single line'):
+        convert_medleydb_melody(tmp_path / 'mdb', tmp_path / 'out', definition=3)
+
+
 def test_medleydb_skips_instrumentals(tmp_path):
     src = tmp_path / 'mdb'
     for track in ('Sung_Song', 'Only_Strings'):
