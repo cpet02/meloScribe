@@ -1006,7 +1006,12 @@ def run_fuzz_case(name: str, out_dir: Path, entries: Sequence[str] = ENTRIES,
     if expect == 'first_half':
         import soundfile as sf
         try:
-            cut_s = sf.info(str(path)).duration
+            # What decodes, not what the header claims: a truncated MP3's
+            # Xing header still gives the whole song's length (2.9 s of which
+            # 1.39 s decodes), and judging against that marked a perfect
+            # transcription of what is there as WRONG.
+            samples, sr = sf.read(str(path))
+            cut_s = len(samples) / sr
         except Exception:
             cut_s = 1.3
     rows = []

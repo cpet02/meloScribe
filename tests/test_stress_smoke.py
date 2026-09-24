@@ -60,6 +60,15 @@ def test_silence_fuzz_case_yields_no_notes(tmp_path):
 # Regression tests for bugs the stress run found
 # --------------------------------------------------------------------------
 
+def test_a_truncated_mp3_is_judged_on_what_decodes(tmp_path):
+    """Its Xing header still claims the whole song (2.9 s, of which 1.39 s
+    decodes), so judging against the header expected notes that are not in
+    the file and called a perfect transcription WRONG (F1 0.67)."""
+    rows = stress.run_fuzz_case('mp3_truncated', tmp_path, entries=('engine',),
+                                voters=FAST)
+    assert rows[0]['verdict'].startswith('ok'), rows[0]
+
+
 def test_non_finite_samples_are_repaired_not_fatal(tmp_path):
     """One NaN sample used to kill the run inside librosa.resample with
     'Audio buffer is not finite everywhere'."""
