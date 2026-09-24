@@ -913,7 +913,10 @@ async function playRange(t0, t1, opts = {}) {
     $('playHint').style.color = '';
     tick(state);
   } catch (err) {
-    if (playing === state) stopPlayback();
+    // Stopped or replaced while it was starting (the pending play() rejects
+    // with AbortError): the user did that, it is not a failure.
+    if (playing !== state) return;
+    stopPlayback();
     $('playHint').textContent = `Playback failed: ${err.message}.`;
     $('playHint').style.color = 'var(--err)';
   }
