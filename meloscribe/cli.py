@@ -3,6 +3,7 @@
     meloscribe song.mp3 --track "Karma Police" --artist Radiohead
     meloscribe song.mp3 --no-lyrics --format leadsheet
     meloscribe vocals.wav --vocals-only --midi out.mid
+    meloscribe song.mp3 --no-lyrics --transpose 9 --musicxml sax.musicxml
 
 The naming gate is enforced here as it is everywhere else: a track name is
 required unless `--no-lyrics` is passed. The error arrives before separation
@@ -12,12 +13,15 @@ starts, not after.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 from pathlib import Path
 from typing import List, Optional
 
+from .audio import AudioLoadError
 from .lyrics.service import LyricsMode, MissingTrackName
-from .output import FORMATS, render, write_midi
+from .output import (FORMATS, musicxml_for_output, render, score_for_output,
+                     write_midi)
 from .pipeline import Pipeline, TranscriptionRequest
 from .stems import best_device
 
@@ -48,6 +52,7 @@ examples:
   meloscribe song.mp3 --track "Karma Police" --artist Radiohead
   meloscribe song.mp3 --no-lyrics --format leadsheet
   meloscribe song.mp3 --preset max --transpose 9 --midi sax.mid
+  meloscribe song.mp3 --transpose 9 --musicxml sax.musicxml --pickup 1
   meloscribe vocals.wav --vocals-only --format csv -o notes.csv
 """)
 
@@ -81,6 +86,18 @@ examples:
     out.add_argument('--format', '-f', choices=FORMATS, default='table')
     out.add_argument('--output', '-o', help='Write to this file instead of stdout')
     out.add_argument('--midi', help='Also write a MIDI file here')
+    out.add_argument('--musicxml', help='Also write sheet music (MusicXML) '
+                                        'here, for MuseScore and the like')
+    out.add_argument('--quantize', action='store_true',
+                     help='Write --midi on the same beat grid as the sheet '
+                          'music, instead of the performed timing')
+    out.add_argument('--time-signature', choices=['4/4', '3/4'],
+                     default='4/4',
+                     help='Meter for sheet music; not detected (default 4/4)')
+    out.add_argument('--pickup', type=int, default=0, metavar='BEATS',
+                     help='Beats before the first bar line in sheet music, '
+                          'counted from the beat the melody starts on; not '
+                          'detected (default 0)')
     out.add_argument('--transpose', type=int, default=0,
                      help='Semitones to transpose (9 for alto sax in Eb)')
     out.add_argument('--confidence', type=float, default=0.0,
@@ -120,11 +137,15 @@ def main(argv: Optional[List[str]] = None) -> int:
               f"lyrics: {mode.value}", file=sys.stderr)
 
     try:
-        output = Pipeline().run(request, progress=progress)
+        # stdout is reserved for the rendered result. Libraries print progress
+        # there (basic-pitch: "Predicting MIDI for ..."), which made
+        # `--format json > notes.json` write invalid JSON.
+        with contextlib.redirect_stdout(sys.stderr):
+            output = Pipeline().run(request, progress=progress)
     except MissingTrackName as exc:
         print(f"\nerror: {exc}", file=sys.stderr)
         return 2
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, AudioLoadError) as exc:
         print(f"\nerror: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
@@ -134,8 +155,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not args.quiet:
         sys.stderr.write('\n')
         if output.key:
-            print(f"key: {output.key.name} (confidence {output.key.confidence:.2f})",
-                  file=sys.stderr)
+            line = f"key: {output.key.name} (confidence {output.key.confidence:.2f})"
+            # Transposed notes are read in a different key from the one sung;
+            # naming only the concert key would contradict every note.
+            if output.written_key:
+                line += f"  written: {output.written_key.name} ({args.transpose:+d})"
+            print(line, file=sys.stderr)
         if output.lyrics:
             print(f"lyrics: {output.lyrics.summary()}", file=sys.stderr)
         if output.rhythm:
@@ -146,13 +171,36 @@ def main(argv: Optional[List[str]] = None) -> int:
         for warning in output.warnings:
             print(f"warning: {warning}", file=sys.stderr)
 
+    # Sheet music and quantised MIDI share one quantisation, so they agree.
+    # Tracking the beat for it can take a few seconds, so only when asked.
+    score = None
+    if args.quantize and not args.midi:
+        print('warning: --quantize applies to --midi; no MIDI requested',
+              file=sys.stderr)
+    if args.format == 'musicxml' or args.musicxml or (args.midi
+                                                      and args.quantize):
+        score = score_for_output(
+            output, beats_per_bar=int(args.time_signature.split('/')[0]),
+            pickup=args.pickup)
+        if not args.quiet:
+            print(_describe_score(score), file=sys.stderr)
+            for warning in score.warnings:
+                print(f"warning: {warning}", file=sys.stderr)
+
     if args.midi:
         try:
-            write_midi(output.notes, args.midi)
+            write_midi(output.notes, args.midi,
+                       score=score if args.quantize else None)
             if not args.quiet:
                 print(f"midi: {args.midi}", file=sys.stderr)
         except ImportError as exc:
             print(f"warning: {exc}", file=sys.stderr)
+
+    if args.musicxml:
+        Path(args.musicxml).write_text(musicxml_for_output(output, score),
+                                       encoding='utf-8')
+        if not args.quiet:
+            print(f"musicxml: {args.musicxml}", file=sys.stderr)
 
     if args.format == 'midi':
         if not args.midi:
@@ -160,10 +208,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
         return 0
 
-    text = render(output.notes, args.format, show_voters=args.show_voters,
-                  title=args.track, artist=args.artist,
-                  **({'key': output.key.name} if output.key and
-                     args.format == 'json' else {}))
+    extra = {}
+    if output.key and args.format == 'json':
+        extra['key'] = output.key.name
+        if output.written_key:
+            extra['written_key'] = output.written_key.name
+    if args.format == 'musicxml':
+        text = musicxml_for_output(output, score)
+    else:
+        text = render(output.notes, args.format, show_voters=args.show_voters,
+                      title=args.track, artist=args.artist, **extra)
 
     if args.output:
         Path(args.output).write_text(text, encoding='utf-8')
@@ -173,6 +227,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(text)
 
     return 0
+
+
+def _describe_score(score) -> str:
+    """One line on how the sheet music was barred, and how far to trust it."""
+    meter = f"{score.beats_per_bar}/4"
+    if score.approximate:
+        return (f"sheet music: {meter} at ~{score.bpm:.0f} BPM - approximate, "
+                f"no reliable beat grid (tempo from note spacing)")
+    triplets = len(score.ternary_beats)
+    return (f"sheet music: {meter} at {score.bpm:.0f} BPM on the tracked beat "
+            f"grid" + (f", {triplets} beat(s) in triplets" if triplets else ''))
 
 
 if __name__ == '__main__':

@@ -73,7 +73,28 @@
   .msg.err { background: color-mix(in srgb, var(--err) 12%, transparent); color: var(--err); }
   .msg.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }
   .msg.ok { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
-  #roll { width: 100%; height: 220px; display: block; }
+  #roll { width: 100%; height: 120px; display: block; cursor: pointer; }
+  #sectionRoll { width: 100%; height: 280px; display: block; cursor: pointer; }
+  .sections { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 14px; }
+  .slider-row { margin: 12px 0 4px; flex-wrap: nowrap; }
+  .slider-row input[type=range] {
+    flex: 1; min-width: 0; padding: 0; border: 0; background: transparent;
+    accent-color: var(--accent);
+  }
+  button.icon { padding: 5px 12px; font-size: 17px; line-height: 1; }
+  .tabnum { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .section-title { margin: 8px 0 10px; }
+  .play-row { margin: 10px 0 4px; }
+  label.inline { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; }
+  label.inline input { width: auto; margin: 0; }
+  .scroll { position: relative; }
+  /* On a phone the table is wider than the screen anyway and scrolls
+     sideways; letting the lyric column wrap instead squeezes it to a word per
+     line and makes every row five lines tall. */
+  @media (max-width: 600px) { #noteScroll td { white-space: nowrap; } }
+  #noteRows tr[data-i] { cursor: pointer; }
+  #noteRows tr.cur td { background: var(--accent-soft); }
+  #noteRows tr.focus td { box-shadow: inset 0 -2px 0 var(--accent); }
   .results-list { max-height: 190px; overflow-y: auto; }
   .result-item {
     padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px;
@@ -108,7 +129,7 @@
   body.mode-adv .simple-only { display: none !important; }
   .modes { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
   .modes button {
-    background: transparent; color: var(--fg); border: 0; border-radius: 0;
+    background: transparent; color: var(--text); border: 0; border-radius: 0;
     padding: 5px 13px; font-size: 12px; font-weight: 500; cursor: pointer;
   }
   .modes button[aria-pressed="true"] { background: var(--accent); color: #fff; }
@@ -266,12 +287,57 @@
       <span class="pill" id="noteCount"></span>
       <span class="meta" id="resultMeta"></span>
     </div>
-    <canvas id="roll"></canvas>
+    <canvas id="roll" title="Click to jump to that point in the song"></canvas>
+
+    <div id="sectionBox" class="sections">
+      <div class="row" style="justify-content:space-between">
+        <div class="modes" role="group" aria-label="Section size">
+          <button type="button" id="grainLine" aria-pressed="true">Lines</button>
+          <button type="button" id="grainPart" aria-pressed="false">Parts</button>
+        </div>
+        <span class="meta" id="sectionBasis"></span>
+      </div>
+      <div class="row slider-row">
+        <button class="secondary icon" id="prevSec" aria-label="Previous section">&lsaquo;</button>
+        <input type="range" id="sectionSlider" min="0" max="0" value="0" step="1"
+               aria-label="Section of the song">
+        <button class="secondary icon" id="nextSec" aria-label="Next section">&rsaquo;</button>
+        <span class="meta tabnum" id="sectionPos"></span>
+      </div>
+      <div class="section-title">
+        <strong id="sectionLabel"></strong> <span id="sectionText"></span>
+        <div class="meta tabnum" id="sectionMeta"></div>
+      </div>
+      <canvas id="sectionRoll"></canvas>
+      <div class="row play-row">
+        <button id="playBtn">&#9654; Play section</button>
+        <select id="sourceSel" aria-label="What to play">
+          <option value="mix">Full song</option>
+          <option value="vocals">Vocals only</option>
+          <option value="notes">Transcribed notes</option>
+        </select>
+        <label class="inline"><input type="checkbox" id="overlayBox"> Notes on top</label>
+        <label class="inline"><input type="checkbox" id="loopBox"> Loop</label>
+        <label class="inline">Speed
+          <select id="rateSel">
+            <option value="1" selected>1&times;</option>
+            <option value="0.75">0.75&times;</option>
+            <option value="0.5">0.5&times;</option>
+          </select>
+        </label>
+      </div>
+      <div class="meta" id="playHint">
+        Click a note to hear it on its own. Space plays or stops; &larr; &rarr; step between sections.
+      </div>
+      <audio id="player" preload="none" class="hidden"></audio>
+    </div>
     <div class="row" style="margin:14px 0">
       <button class="secondary" data-dl="csv"
               data-simple="Spreadsheet" data-adv="CSV">Spreadsheet</button>
       <button class="secondary" data-dl="leadsheet"
               data-simple="Sheet to read" data-adv="Lead sheet">Sheet to read</button>
+      <button class="secondary" data-dl="musicxml"
+              data-simple="Sheet music" data-adv="MusicXML">Sheet music</button>
       <button class="secondary" data-dl="midi"
               data-simple="MIDI for a DAW" data-adv="MIDI">MIDI for a DAW</button>
       <button class="secondary" data-dl="lrc"
@@ -285,7 +351,11 @@
       Show per-voter breakdown — what each estimator scored for the chosen note
     </label>
     <div id="rhythmBar"></div>
-    <div class="scroll">
+    <label class="meta" id="allNotesRow" style="display:flex;align-items:center;gap:7px;margin:4px 0 10px">
+      <input type="checkbox" id="allNotes" style="width:auto;margin:0">
+      List every note, not just this section's
+    </label>
+    <div class="scroll" id="noteScroll">
       <table>
         <thead><tr><th>#</th><th>Note</th><th>Start</th><th>Dur</th>
           <th>Conf</th><th>Cents</th>
@@ -466,6 +536,7 @@ $('searchBtn').onclick = async () => {
 /* ---------- run ---------- */
 $('runBtn').onclick = async () => {
   if (!validate()) return;
+  stopPlayback();
   $('runBtn').disabled = true;
   $('resultPanel').classList.add('hidden');
   $('progressPanel').classList.remove('hidden');
@@ -495,6 +566,10 @@ $('runBtn').onclick = async () => {
     if (!res.ok) throw new Error((await res.json()).detail);
     jobId = (await res.json()).id;
     $('cancelBtn').classList.remove('hidden');
+    // Run can be pressed again mid-job (validate() re-enables it). A second
+    // timer left running would reload the result - and reset the section
+    // slider and its playback - on every tick.
+    clearInterval(poller);
     poller = setInterval(poll, 700);
   } catch (err) {
     showError(err.message);
@@ -508,7 +583,10 @@ $('cancelBtn').onclick = async () => {
 
 async function poll() {
   if (!jobId) return;
-  const job = await (await fetch('/api/jobs/' + jobId)).json();
+  const id = jobId;
+  const job = await (await fetch('/api/jobs/' + id)).json();
+  // A newer job started while this request was out; its own polls report it.
+  if (id !== jobId) return;
   $('barFill').style.width = (job.progress * 100) + '%';
   $('progressMsg').textContent = job.message;
   $('progressPct').textContent = Math.round(job.progress * 100) + '%';
@@ -527,20 +605,29 @@ function showError(text) {
   $('jobError').classList.remove('hidden');
 }
 
+/* ---------- result ---------- */
+let data = null;
+
 async function loadResult(job) {
-  const data = await (await fetch(`/api/jobs/${jobId}/notes`)).json();
+  data = await (await fetch(`/api/jobs/${jobId}/notes`)).json();
   notes = data.notes;
   $('resultPanel').classList.remove('hidden');
   $('noteCount').textContent = `${notes.length} notes`;
+  // The key is concert pitch; a transposed result also says what it is written in.
   $('resultMeta').textContent =
-    [data.key && `key ${data.key}`, data.lyrics,
-     job.summary && `${job.summary.elapsed_s}s`].filter(Boolean).join(' · ');
+    [data.key && `key ${data.key}`, data.written_key && `written ${data.written_key}`,
+     data.lyrics, job.summary && `${job.summary.elapsed_s}s`].filter(Boolean).join(' · ');
 
   $('warnings').innerHTML = (data.warnings || [])
     .map(w => `<div class="msg warn">${escapeHtml(w)}</div>`).join('');
 
-  $('noteRows').innerHTML = notes.map((n, i) => `
-    <tr class="${n.confidence < 0.5 ? 'low' : ''}">
+  rhythmBar(data.rhythm);
+  setupSections();
+}
+
+function noteRow(n, i, cls) {
+  return `
+    <tr data-i="${i}" class="${cls}">
       <td>${i + 1}</td><td><code>${n.note}</code></td>
       <td>${n.start_time.toFixed(2)}</td><td>${n.duration.toFixed(2)}</td>
       <td>${n.confidence.toFixed(2)}</td>
@@ -548,10 +635,7 @@ async function loadResult(job) {
       ${beatCells(n)}
       <td>${escapeHtml(n.lyric || '')}</td>
       <td class="voters-col voter-scores">${voterCell(n.voters)}</td>
-    </tr>`).join('');
-
-  rhythmBar(data.rhythm);
-  drawRoll();
+    </tr>`;
 }
 
 // Empty cells, not zeros, when the rhythm stage did not run or did not trust
@@ -604,47 +688,604 @@ function voterCell(voters) {
 $('showVoters').onchange = e =>
   document.body.classList.toggle('show-voters', e.target.checked);
 
-/* ---------- piano roll ---------- */
-function drawRoll() {
-  const canvas = $('roll');
-  const ratio = window.devicePixelRatio || 1;
-  const width = canvas.clientWidth, height = 220;
-  canvas.width = width * ratio; canvas.height = height * ratio;
-  const ctx = canvas.getContext('2d');
-  ctx.scale(ratio, ratio);
-  ctx.clearRect(0, 0, width, height);
-  if (!notes.length) return;
+/* ---------- sections ---------- */
+// The slider walks through the song one lyric line (or phrase, when there
+// are no timed lyrics) or one part at a time. The server guarantees every
+// note sits in exactly one section per granularity, so stepping through the
+// whole slider visits the whole melody once.
+let grain = 'line', secIdx = 0, focusNote = null;
+let noteSection = { line: [], part: [] };
+let overviewScale = null;
 
+function sections() { return (data && data.sections && data.sections[grain]) || []; }
+function currentSection() { return sections()[secIdx]; }
+
+function setupSections() {
+  const sec = data.sections || { line: [], part: [] };
+  for (const g of ['line', 'part']) {
+    noteSection[g] = new Array(notes.length).fill(-1);
+    (sec[g] || []).forEach((s, k) => s.notes.forEach(i => { noteSection[g][i] = k; }));
+  }
+  $('grainLine').textContent = sec.basis === 'lyrics' ? 'Lines' : 'Phrases';
+  $('sectionBasis').textContent = sec.reason || '';
+  // With no sections the table lists every note anyway, and with no notes
+  // the overview would be an empty box.
+  const sectioned = (sec.line || []).length > 0;
+  $('sectionBox').classList.toggle('hidden', !sectioned);
+  $('allNotesRow').classList.toggle('hidden', !sectioned);
+  $('roll').classList.toggle('hidden', !notes.length);
+
+  // Only offer audio the server actually has for this job.
+  const have = new Set(data.audio || []);
+  const sel = $('sourceSel');
+  [...sel.options].forEach(o => { o.disabled = o.value !== 'notes' && !have.has(o.value); });
+  if (sel.selectedOptions[0].disabled)
+    sel.value = have.has('mix') ? 'mix' : have.has('vocals') ? 'vocals' : 'notes';
+
+  const end = Math.max(data.duration || 0, ...notes.map(n => n.end_time), 1);
+  const pitches = notes.map(n => n.midi);
+  overviewScale = notes.length
+    ? { end, lo: Math.min(...pitches) - 2, hi: Math.max(...pitches) + 2 } : null;
+
+  focusNote = null;
+  setGrain(grain, 0);
+}
+
+function setGrain(g, atTime) {
+  grain = g;
+  $('grainLine').setAttribute('aria-pressed', String(g === 'line'));
+  $('grainPart').setAttribute('aria-pressed', String(g === 'part'));
+  secIdx = sectionAt(atTime);
+  $('sectionSlider').max = Math.max(0, sections().length - 1);
+  renderSection();
+  // Keep playing from the same spot, but through the section now on screen:
+  // the old range would stop a part after one line, or run a line on
+  // through the rest of its part.
+  if (playing && playing.only === null) playSection(atTime);
+}
+
+// The section playing or containing `t`; between two sections, the nearer.
+function sectionAt(t) {
+  const list = sections();
+  let k = 0;
+  while (k + 1 < list.length && list[k + 1].start <= t) k++;
+  if (k + 1 < list.length && t > list[k].end &&
+      list[k + 1].start - t < t - list[k].end) k++;
+  return k;
+}
+
+function selectSection(k) {
+  const list = sections();
+  if (!list.length) return;
+  k = Math.max(0, Math.min(list.length - 1, k));
+  if (k === secIdx) return;
+  const resume = playing && playing.only === null;
+  secIdx = k;
+  focusNote = null;
+  renderSection();
+  if (resume) playSection();
+}
+
+function renderSection() {
+  const list = sections(), s = list[secIdx];
+  if (s) {
+    $('sectionSlider').value = secIdx;
+    $('sectionPos').textContent = `${secIdx + 1} / ${list.length}`;
+    $('sectionLabel').textContent = s.label;
+    $('sectionText').textContent = s.text ? '— ' + s.text
+      : s.kind === 'untexted' ? '— sung between lyric lines' : '';
+    const bits = [`${fmtTime(s.start)} – ${fmtTime(s.end)}`,
+                  s.notes.length ? `${s.notes.length} note${s.notes.length === 1 ? '' : 's'}`
+                                 : 'no notes detected here'];
+    if (s.repeat_of !== null && s.repeat_of !== undefined)
+      bits.push(`same words as ${list[s.repeat_of].label}`);
+    $('sectionMeta').textContent = bits.join(' · ');
+    $('prevSec').disabled = secIdx === 0;
+    $('nextSec').disabled = secIdx === list.length - 1;
+  }
+  drawSection();
+  drawOverview();
+  renderTable();
+}
+
+function renderTable() {
+  const s = currentSection();
+  const all = $('allNotes').checked || !s;
+  const members = new Set(s ? s.notes : []);
+  const shown = all ? notes.map((_, i) => i) : s.notes;
+  $('noteRows').innerHTML = shown.map(i => noteRow(notes[i], i, [
+    notes[i].confidence < 0.5 ? 'low' : '',
+    all && s && members.has(i) ? 'cur' : '',
+    i === focusNote ? 'focus' : ''].join(' '))).join('')
+    || `<tr><td colspan="10" class="meta">${notes.length
+         ? 'No notes in this section.' : 'No notes were detected.'}</td></tr>`;
+
+  // With every note listed, keep the current section in view - but only
+  // scroll when it is out of view, or clicking a row would pull the list
+  // out from under the pointer.
+  const target = focusNote !== null ? focusNote : (s && s.notes[0]);
+  if (all && target !== undefined && target !== null) {
+    const row = $('noteRows').querySelector(`tr[data-i="${target}"]`);
+    const box = $('noteScroll');
+    if (row && (row.offsetTop < box.scrollTop ||
+                row.offsetTop + row.offsetHeight > box.scrollTop + box.clientHeight))
+      box.scrollTop = Math.max(0, row.offsetTop - 40);
+  }
+}
+
+$('grainLine').onclick = () => setGrain('line', playheadTime());
+$('grainPart').onclick = () => setGrain('part', playheadTime());
+$('sectionSlider').addEventListener('input', e => selectSection(parseInt(e.target.value, 10)));
+$('prevSec').onclick = () => selectSection(secIdx - 1);
+$('nextSec').onclick = () => selectSection(secIdx + 1);
+$('allNotes').onchange = renderTable;
+$('noteRows').onclick = e => {
+  const row = e.target.closest('tr[data-i]');
+  if (row) playNote(parseInt(row.dataset.i, 10));
+};
+
+function playheadTime() {
+  if (playing) return clockTime(playing);
+  // A clicked note is the most exact place the user has pointed at.
+  if (focusNote !== null && notes[focusNote]) return notes[focusNote].start_time;
+  const s = currentSection();
+  return s ? s.start : 0;
+}
+
+/* ---------- playback ---------- */
+// One <audio> element for the recording, seeked to the section; Web Audio
+// for the transcribed notes, so they can be heard alone or on top of the
+// singer - the quickest way to hear whether a note is right.
+const player = $('player');
+const defaultHint = $('playHint').textContent;
+let playing = null, audioCtx = null;
+
+function audioContext() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+async function loadSource(source) {
+  const url = `/api/jobs/${jobId}/audio/${source}`;
+  // The element does not retry a failed load by itself, so a second try at
+  // the same URL would wait forever for events that already came and went.
+  if (player.dataset.src !== url || player.error) {
+    player.dataset.src = url;
+    player.src = url;
+    player.load();
+  }
+  if (player.readyState >= 1) return;
+  await new Promise((resolve, reject) => {
+    const settle = ok => () => {
+      player.removeEventListener('loadedmetadata', loaded);
+      player.removeEventListener('error', failed);
+      ok ? resolve() : reject(new Error('the audio could not be loaded'));
+    };
+    const loaded = settle(true), failed = settle(false);
+    player.addEventListener('loadedmetadata', loaded);
+    player.addEventListener('error', failed);
+  });
+}
+
+function clockTime(state) {
+  // Until playback has really started, the clock stands where it will start.
+  if (state.ctxStart === undefined) return state.t0;
+  if (state.source === 'notes')
+    return state.t0 + (audioContext().currentTime - state.ctxStart) * state.rate;
+  return player.currentTime;
+}
+
+function stopPlayback() {
+  if (!playing) return;
+  const state = playing;
+  playing = null;
+  cancelAnimationFrame(state.raf);
+  clearTimeout(state.timer);
+  player.pause();
+  state.voices.forEach(v => { try { v.stop(); } catch (e) {} });
+  $('playBtn').innerHTML = '&#9654; Play section';
+  if (data) { drawSection(); drawOverview(); }
+}
+
+async function playRange(t0, t1, opts = {}) {
+  stopPlayback();
+  const source = $('sourceSel').value;
+  const rate = parseFloat($('rateSel').value) || 1;
+  // A loop goes back to `loopFrom`, the top of the section, even when this
+  // pass started part-way through it.
+  const state = { t0, t1, source, rate, voices: [], raf: 0, timer: 0,
+                  loop: !!opts.loop, only: opts.only ?? null,
+                  loopFrom: opts.loopFrom ?? t0 };
+  playing = state;
+  $('playBtn').innerHTML = '&#9632; Stop';
+  // Woken now, while still inside the click: some browsers only let audio
+  // start from a user gesture, and everything below awaits.
+  const ctx = audioContext();
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  try {
+    if (source !== 'notes') {
+      await loadSource(source);
+      if (playing !== state) return;
+      player.playbackRate = rate;
+      player.currentTime = Math.max(0, t0);
+      await player.play();
+      if (playing !== state) return;
+    }
+    if (ctx.state === 'suspended') await ctx.resume();
+    if (playing !== state) return;
+    state.ctxStart = ctx.currentTime;
+    state.mediaStart = source === 'notes' ? t0 : player.currentTime;
+    if (source === 'notes' || $('overlayBox').checked) scheduleNotes(state, ctx);
+    $('playHint').textContent = defaultHint;
+    $('playHint').style.color = '';
+    tick(state);
+  } catch (err) {
+    // Stopped or replaced while it was starting (the pending play() rejects
+    // with AbortError): the user did that, it is not a failure.
+    if (playing !== state) return;
+    stopPlayback();
+    $('playHint').textContent = `Playback failed: ${err.message}.`;
+    $('playHint').style.color = 'var(--err)';
+  }
+}
+
+// Notes play at the pitch that was sung: the listed names are transposed for
+// the instrument, the recording is not.
+function scheduleNotes(state, ctx) {
+  const master = ctx.createGain();
+  master.gain.value = state.source === 'notes' ? 0.22 : 0.12;
+  master.connect(ctx.destination);
+  const chosen = state.only !== null ? [notes[state.only]]
+    : notes.filter(n => n.end_time > state.t0 && n.start_time < state.t1);
+  for (const n of chosen) {
+    const from = Math.max(n.start_time, state.mediaStart);
+    const until = Math.min(n.end_time, state.t1);
+    if (until <= from) continue;
+    const at = state.ctxStart + (from - state.mediaStart) / state.rate;
+    const len = (until - from) / state.rate;
+    const osc = ctx.createOscillator(), env = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.value = 440 * Math.pow(2, (n.midi - (data.transpose || 0) - 69) / 12);
+    env.gain.setValueAtTime(0, at);
+    env.gain.linearRampToValueAtTime(1, at + 0.012);
+    env.gain.setValueAtTime(1, at + Math.max(0.012, len - 0.04));
+    env.gain.linearRampToValueAtTime(0, at + len);
+    osc.connect(env).connect(master);
+    osc.start(at);
+    osc.stop(at + len + 0.02);
+    state.voices.push(osc);
+  }
+}
+
+function tick(state) {
+  if (playing !== state) return;
+  cancelAnimationFrame(state.raf);
+  clearTimeout(state.timer);
+  const t = clockTime(state);
+  drawSection(t);
+  drawOverview(t);
+  if (t >= state.t1 || (state.source !== 'notes' && player.ended)) {
+    if (state.loop) playRange(state.loopFrom, state.t1, { loop: true, only: state.only });
+    else stopPlayback();
+    return;
+  }
+  state.raf = requestAnimationFrame(() => tick(state));
+  // Animation frames stop in a background tab; this still ends the section.
+  state.timer = setTimeout(() => tick(state), ((state.t1 - t) / state.rate) * 1000 + 30);
+}
+
+function playSection(from) {
+  const s = currentSection();
+  if (!s) return;
+  const top = Math.max(0, s.start - 0.15);
+  playRange(from !== undefined ? from : top, s.end + 0.35,
+            { loop: $('loopBox').checked, loopFrom: top });
+}
+
+function playNote(i) {
+  const n = notes[i];
+  if (!n) return;
+  focusNote = i;
+  const k = noteSection[grain][i];
+  if (k >= 0) secIdx = k;
+  renderSection();
+  playRange(Math.max(0, n.start_time - 0.04), n.end_time + 0.12, { only: i });
+}
+
+$('playBtn').onclick = () => (playing ? stopPlayback() : playSection());
+$('loopBox').onchange = e => { if (playing) playing.loop = e.target.checked; };
+['sourceSel', 'rateSel', 'overlayBox'].forEach(id => $(id).addEventListener('change', () => {
+  if (playing && playing.only === null) playSection(clockTime(playing));
+}));
+
+// A clicked button keeps focus, and a focused button takes Space for itself,
+// so after clicking › the next Space would step again instead of playing. A
+// mouse click lets go of focus; a keyboard press (detail 0) leaves it be.
+['prevSec', 'nextSec', 'grainLine', 'grainPart', 'playBtn'].forEach(id =>
+  $(id).addEventListener('click', e => { if (e.detail) e.currentTarget.blur(); }));
+
+document.addEventListener('keydown', e => {
+  if (!data || $('resultPanel').classList.contains('hidden')) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const el = e.target, tag = el.tagName;
+  const isSlider = el === $('sectionSlider');
+  // Text boxes and selects use both keys themselves, the slider its arrows;
+  // buttons and checkboxes need Space but have no use for the arrows.
+  const ownsArrows = el.isContentEditable || tag === 'SELECT' || tag === 'TEXTAREA'
+                     || (tag === 'INPUT' && el.type !== 'checkbox');
+  const ownsSpace = !isSlider && (ownsArrows || tag === 'BUTTON' || tag === 'SUMMARY'
+                                  || el.type === 'checkbox');
+  if (e.key === ' ' && !ownsSpace) {
+    e.preventDefault();
+    playing ? stopPlayback() : playSection();
+  } else if (!ownsArrows && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    e.preventDefault();
+    selectSection(secIdx + (e.key === 'ArrowRight' ? 1 : -1));
+  }
+});
+
+/* ---------- drawing ---------- */
+const SHARPS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const FLATS = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+const BLACK_KEYS = new Set([1, 3, 6, 8, 10]);
+// Row names must read the same as the server's note names on the bars and in
+// the table: its own name for each pitch class when it sends them, else its
+// flat or sharp convention, else sharps. The octave goes with the letter, as
+// the server counts it: C# minor's leading tone at MIDI 60 is B#3, not B#4.
+function pitchNames() {
+  const names = data && data.pitch_names;
+  if (Array.isArray(names) && names.length === 12) return names;
+  return data && data.spelling === 'flat' ? FLATS : SHARPS;
+}
+function noteName(m) {
+  const name = pitchNames()[((m % 12) + 12) % 12];
+  const alter = (name.match(/#/g) || []).length - (name.match(/b/g) || []).length;
+  return name + (Math.floor((m - alter) / 12) - 1);
+}
+
+function fmtTime(t) {
+  // Rounded before splitting into minutes, or 59.97s would read 0:60.0.
+  const tenths = Math.round(t * 10), m = Math.floor(tenths / 600);
+  return `${m}:${((tenths - m * 600) / 10).toFixed(1).padStart(4, '0')}`;
+}
+
+function palette() {
   const style = getComputedStyle(document.documentElement);
-  const accent = style.getPropertyValue('--accent').trim();
-  const border = style.getPropertyValue('--border').trim();
-  const muted = style.getPropertyValue('--muted').trim();
+  const v = name => style.getPropertyValue(name).trim();
+  return { accent: v('--accent'), border: v('--border'), muted: v('--muted'),
+           text: v('--text'), soft: v('--accent-soft'), panel: v('--panel') };
+}
 
-  const endTime = Math.max(...notes.map(n => n.end_time));
-  const lo = Math.min(...notes.map(n => n.midi)) - 2;
-  const hi = Math.max(...notes.map(n => n.midi)) + 2;
-  const x = t => (t / endTime) * (width - 34) + 30;
-  const y = m => height - 14 - ((m - lo) / (hi - lo)) * (height - 28);
+function rgb(color) {
+  let hex = color.replace('#', '');
+  if (/^[0-9a-f]{3}$/i.test(hex)) hex = hex.replace(/./g, '$&$&');
+  if (/^[0-9a-f]{6}$/i.test(hex)) return [0, 2, 4].map(k => parseInt(hex.slice(k, k + 2), 16));
+  const parts = color.match(/[\d.]+/g) || [];
+  return parts.length >= 3 ? parts.slice(0, 3).map(Number) : [128, 128, 128];
+}
 
-  // Octave gridlines, labelled, so the vertical axis means something.
-  ctx.strokeStyle = border; ctx.fillStyle = muted;
+function luminance([r, g, b]) {
+  const lin = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+// A note name sits on its bar, and the bar fades from the accent towards the
+// background as confidence drops - white stops reading on a faint bar, and on
+// the dark theme's light accent. Whichever of the text and background colours
+// stands out more from the bar actually drawn is used.
+function labelColor(c, alpha) {
+  const under = rgb(c.panel);
+  const bar = luminance(rgb(c.accent).map((v, k) => alpha * v + (1 - alpha) * under[k]));
+  const contrast = color => {
+    const l = luminance(rgb(color));
+    return (Math.max(l, bar) + 0.05) / (Math.min(l, bar) + 0.05);
+  };
+  return contrast(c.text) > contrast(c.panel) ? c.text : c.panel;
+}
+
+function canvasContext(canvas) {
+  const ratio = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth, height = canvas.clientHeight;
+  if (canvas.width !== Math.round(width * ratio)) canvas.width = Math.round(width * ratio);
+  if (canvas.height !== Math.round(height * ratio)) canvas.height = Math.round(height * ratio);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  return { ctx, width, height };
+}
+
+// The whole song, with the current section shaded. Click to jump.
+function drawOverview(playhead) {
+  const { ctx, width, height } = canvasContext($('roll'));
+  if (!overviewScale || !width) return;
+  const c = palette();
+  const { end, lo, hi } = overviewScale;
+  const x = t => (t / end) * (width - 34) + 30;
+  const y = m => height - 10 - ((m - lo) / (hi - lo)) * (height - 20);
+  const s = currentSection();
+
+  if (s) {
+    ctx.fillStyle = c.soft;
+    ctx.fillRect(x(s.start), 0, Math.max(3, x(s.end) - x(s.start)), height);
+  }
+
+  ctx.strokeStyle = c.border; ctx.fillStyle = c.muted;
   ctx.font = '10px ui-monospace, monospace'; ctx.lineWidth = 1;
   for (let m = Math.ceil(lo / 12) * 12; m <= hi; m += 12) {
     ctx.beginPath(); ctx.moveTo(30, y(m)); ctx.lineTo(width - 4, y(m)); ctx.stroke();
     ctx.fillText('C' + (m / 12 - 1), 4, y(m) + 3);
   }
 
-  const rowHeight = Math.max(3, (height - 28) / (hi - lo) - 1);
-  for (const n of notes) {
-    // Opacity encodes confidence: uncertain notes look uncertain.
-    ctx.globalAlpha = 0.28 + 0.72 * Math.min(1, n.confidence);
-    ctx.fillStyle = accent;
+  const members = new Set(s ? s.notes : []);
+  const rowHeight = Math.max(2, (height - 20) / (hi - lo) - 1);
+  ctx.fillStyle = c.accent;
+  notes.forEach((n, i) => {
+    // Opacity encodes confidence; notes outside the section recede.
+    ctx.globalAlpha = (0.28 + 0.72 * Math.min(1, n.confidence))
+                      * (!s || members.has(i) ? 1 : 0.4);
     ctx.fillRect(x(n.start_time), y(n.midi) - rowHeight / 2,
-                 Math.max(2, x(n.end_time) - x(n.start_time)), rowHeight);
-  }
+                 Math.max(1.5, x(n.end_time) - x(n.start_time)), rowHeight);
+  });
   ctx.globalAlpha = 1;
+  drawPlayhead(ctx, playhead !== undefined ? x(playhead) : null, height, c.text);
 }
-window.addEventListener('resize', () => notes.length && drawRoll());
+
+function drawPlayhead(ctx, px, height, color) {
+  if (px === null) return;
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, height); ctx.stroke();
+}
+
+// Just the current section, zoomed in: named pitch rows, note names on the
+// notes, the lyric line above them.
+let sectionLayout = null;
+
+function drawSection(playhead) {
+  const { ctx, width, height } = canvasContext($('sectionRoll'));
+  const s = currentSection();
+  sectionLayout = null;
+  if (!s || !width) return;
+  const c = palette();
+
+  const pad = Math.max(0.2, (s.end - s.start) * 0.04);
+  const t0 = Math.max(0, s.start - pad), t1 = s.end + pad;
+  const members = new Set(s.notes);
+  const visible = [];
+  notes.forEach((n, i) => { if (n.end_time > t0 && n.start_time < t1) visible.push(i); });
+  const basis = s.notes.length ? s.notes : visible;
+  let lo = 58, hi = 70;
+  if (basis.length) {
+    lo = Math.min(...basis.map(i => notes[i].midi)) - 2;
+    hi = Math.max(...basis.map(i => notes[i].midi)) + 2;
+  }
+  if (hi - lo < 12) { lo = Math.floor((lo + hi) / 2) - 6; hi = lo + 12; }
+
+  const gutter = 36, top = 20, bottom = 18;
+  const plotW = width - gutter - 6, plotH = height - top - bottom;
+  const rowH = plotH / (hi - lo + 1);
+  const x = t => gutter + ((t - t0) / (t1 - t0)) * plotW;
+  const y = m => top + (hi - m) * rowH;
+
+  // Pitch rows: black keys shaded, every row named when there is room.
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.textBaseline = 'middle';
+  for (let m = lo; m <= hi; m++) {
+    if (BLACK_KEYS.has(((m % 12) + 12) % 12)) {
+      ctx.globalAlpha = 0.35; ctx.fillStyle = c.border;
+      ctx.fillRect(gutter, y(m), plotW, rowH);
+      ctx.globalAlpha = 1;
+    }
+    if (m % 12 === 0) {
+      ctx.strokeStyle = c.border; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(gutter, y(m) + rowH); ctx.lineTo(gutter + plotW, y(m) + rowH); ctx.stroke();
+    }
+    if (rowH >= 9 || m % 12 === 0) {
+      ctx.fillStyle = m % 12 === 0 ? c.text : c.muted;
+      ctx.fillText(noteName(m), 2, y(m) + rowH / 2);
+    }
+  }
+
+  // Time axis. Steps that tenths can show exactly (a 0.25 tick would be
+  // labelled 0.3), counted in whole steps so the labels do not drift; a label
+  // that would run off the right edge is left off.
+  const span = t1 - t0;
+  const step = [0.2, 0.5, 1, 2, 5, 10, 15, 30].find(v => (v / span) * plotW >= 64) || 30;
+  ctx.fillStyle = c.muted; ctx.textBaseline = 'alphabetic';
+  for (let k = Math.ceil(t0 / step); k * step <= t1; k++) {
+    const t = k * step, label = fmtTime(t);
+    ctx.fillRect(x(t), height - bottom, 1, 4);
+    if (x(t) + 2 + ctx.measureText(label).width <= width) ctx.fillText(label, x(t) + 2, height - 4);
+  }
+
+  // Lyric lines along the top, each clipped to its own span.
+  ctx.textBaseline = 'middle';
+  ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
+  for (const line of s.lines || []) {
+    const a = Math.max(gutter, x(line.start));
+    const b = Math.min(gutter + plotW, x(Math.max(line.end, line.start + 0.5)));
+    ctx.save();
+    ctx.beginPath(); ctx.rect(a, 0, Math.max(0, b - a), top); ctx.clip();
+    ctx.fillStyle = c.text;
+    ctx.fillText(line.text, a + 2, top / 2);
+    ctx.restore();
+    ctx.fillStyle = c.border; ctx.fillRect(a, 2, 1, top - 4);
+  }
+
+  // Notes.
+  const rects = [];
+  const barH = Math.max(3, rowH - 2);
+  ctx.font = '10px ui-monospace, monospace';
+  let lastWord = null;
+  for (const i of visible) {
+    const n = notes[i];
+    // The range fits this section's own notes; a neighbour's note outside it
+    // would land on the lyrics or the time axis.
+    if (n.midi < lo || n.midi > hi) continue;
+    const rx = x(Math.max(n.start_time, t0));
+    const rw = Math.max(2, x(Math.min(n.end_time, t1)) - rx);
+    const ry = y(n.midi) + (rowH - barH) / 2;
+    const alpha = members.has(i) ? 0.35 + 0.65 * Math.min(1, n.confidence) : 0.22;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = members.has(i) ? c.accent : c.muted;
+    ctx.fillRect(rx, ry, rw, barH);
+    ctx.globalAlpha = 1;
+    if (i === focusNote) {
+      ctx.strokeStyle = c.text; ctx.lineWidth = 2;
+      ctx.strokeRect(rx - 1, ry - 1, rw + 2, barH + 2);
+    }
+    const label = n.note;
+    if (members.has(i) && barH >= 10 && rw >= ctx.measureText(label).width + 6) {
+      ctx.fillStyle = labelColor(c, alpha);
+      ctx.fillText(label, rx + 3, ry + barH / 2);
+    }
+    // Word-level lyrics: each word once, under the first note that sings it.
+    if (data.word_level && members.has(i) && n.lyric && n.lyric !== lastWord) {
+      ctx.fillStyle = c.muted;
+      ctx.fillText(n.lyric, rx, Math.min(height - bottom - 6, ry + barH + 8));
+    }
+    lastWord = n.lyric;
+    rects.push({ i, x: rx, y: ry, w: rw, h: barH });
+  }
+
+  sectionLayout = { t0, t1, gutter, plotW, top, plotH, rects };
+  drawPlayhead(ctx, playhead !== undefined && playhead >= t0 && playhead <= t1
+                    ? x(playhead) : null, height, c.text);
+}
+
+function canvasPoint(canvas, e) {
+  const box = canvas.getBoundingClientRect();
+  return { px: e.clientX - box.left, py: e.clientY - box.top, width: box.width };
+}
+
+$('sectionRoll').onclick = e => {
+  if (!sectionLayout) return;
+  const { px, py } = canvasPoint($('sectionRoll'), e);
+  const L = sectionLayout;
+  // A bar under the pointer beats a near miss, or the slack around a short
+  // note would swallow clicks on the start of the next one.
+  const near = (r, slack) => px >= r.x - slack && px <= r.x + r.w + slack &&
+                             py >= r.y - slack && py <= r.y + r.h + slack;
+  const hit = L.rects.find(r => near(r, 0)) || L.rects.find(r => near(r, 3));
+  if (hit) return playNote(hit.i);
+  if (px >= L.gutter && px <= L.gutter + L.plotW) {
+    const s = currentSection();
+    const t = L.t0 + ((px - L.gutter) / L.plotW) * (L.t1 - L.t0);
+    // Drop the highlight from the table as well as the roll.
+    if (focusNote !== null) { focusNote = null; renderSection(); }
+    if (s && t < s.end) playSection(Math.max(0, t));
+  }
+};
+
+$('roll').onclick = e => {
+  if (!overviewScale) return;
+  const { px, width } = canvasPoint($('roll'), e);
+  const t = ((px - 30) / (width - 34)) * overviewScale.end;
+  selectSection(sectionAt(Math.max(0, t)));
+};
+
+window.addEventListener('resize', () => {
+  if (data) { drawSection(); drawOverview(); }
+});
 
 /* ---------- downloads ---------- */
 document.querySelectorAll('[data-dl]').forEach(btn => btn.onclick = () => {

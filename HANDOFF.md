@@ -4,6 +4,106 @@ Paste this into a new chat to continue work.
 
 ---
 
+## Pending review: branch `main-ob0jw0`
+
+Built and tested in a cloud session (Linux, CPU only, no Demucs weights), so
+it has never run on the GPU or through real separation. Review and merge it
+with **`/merge-review`**: it runs as an agent pinned to Opus at max effort
+(`.claude/agents/merge-reviewer.md`), runs the whole test suite and the
+benchmark on `main` and on the branch, reviews the diff, and merges and pushes
+only if nothing regressed. It needs nothing installed beyond `requirements.txt`.
+
+What the branch adds:
+- **Section slider** in the web UI: step through lyric lines / song parts /
+  sung phrases, with a zoomed piano roll, section playback (song, vocal stem,
+  synthesized notes, or notes on top), loop, slow-down, click-to-hear a note.
+  Worth a manual look after merging: run a real song through the web UI.
+- **Sheet music**: beat-quantized MusicXML export (web UI button, `--format
+  musicxml`, `--quantize` for MIDI).
+- **Note names follow the written key** (flats in flat keys; the written key
+  is reported when transposing).
+- **Detection fixes** measured on the synthetic harness (below), crash fixes
+  from fuzzing, a Range-capable audio endpoint, an upload-id traversal fix.
+- **Measurement**: `runner --suite hard`, `eval.stress` (single-condition
+  sweeps + input fuzzing), `eval.datasets` (real corpora), `eval.realistic`
+  (human-voice songs as MP3, see below).
+
+## Next: accuracy work, run locally on the GPU
+
+The first measurements on **real singing** say the synthetic 1.000 was
+flattering. On vocadito_1 (real solo voice, human note labels) ensemble note
+F1 is **0.537**, while two human annotators agree at 0.862. Pitch is mostly
+right; segmentation is not (F1 rises to 0.76 at a 150 ms onset tolerance).
+Ranked by what they cost, each with its evidence:
+
+1. **The decoded path is quantized to semitones, and notes are split wherever
+   it flips.** Vibrato of ±75 c already costs F1 (0.88), ±100 c shreds held
+   notes (0.16: 50 notes for 12, flipping 6.8 times a second); scoops into
+   notes become short semitone-off fragments (vocadito_1 at 0.66 s and
+   2.13-2.67 s); detune past ±45 c and slow drift split too. Averaging the
+   fused pitch over one vibrato period lands 83% of frames on the right
+   semitone against 36% for the decoder. Fix to try: split on onset and
+   voicing evidence only, then give each note the median of its continuous
+   (sub-semitone) pitch. This also makes `cents_off` meaningful - today it
+   can only be 0 or +/-50.
+2. **Same-register accompaniment is transcribed in the rests.** Piano 20 dB
+   *below* the voice already drops F1 to 0.55: CREPE is voiced on 66% of
+   piano-only frames, basic-pitch on 97%, and nothing measures level. Muting
+   voicing more than 12 dB below the loud (95th percentile) level gives 1.00
+   at +20 and +10 dB SNR offline. But a loudness prior tried in the fusion
+   unvoiced genuinely soft lead notes (recall 1.00 -> 0.93) and was rejected,
+   so it needs a design that separates "quiet lead" from "accompaniment"
+   before it can ship. The MIR-1K karaoke mixes show the same collapse in
+   reverse (voicing recall 0.97 -> 0.56 at 0 dB).
+3. **Very short notes vanish**: F1 0.86 at 60 ms, 0.00 at 40 ms (CREPE alone
+   1.00). Fused voicing is a weighted mean and basic-pitch's voicing recall is
+   0.09 on 40 ms notes. Fusing voicing by maximum gives 1.00 at both lengths,
+   at a voicing false-alarm cost of 0.28 -> 0.46 - apply the no-veto floor
+   (decision 2) to voicing, and measure the trade.
+4. **A harmony at or above the lead's level wins** (a third below at 0 dB:
+   F1 0.52). `FusionSettings.backing_weight` fixes the synthetic tails
+   (--suite hard 0.892 -> 0.943) but hurt every real recording with
+   comparable voices, so it is off. Validate it on real separated pop stems
+   with backing vocals, and gate it on a clear level gap.
+
+Where to measure, with before/after for every change (decision 1):
+
+    venv/Scripts/python -m meloscribe.eval.runner --suite all --systems ensemble
+    venv/Scripts/python -m meloscribe.eval.stress sweep --axis all --systems ensemble
+    venv/Scripts/python -m meloscribe.eval.stress fuzz
+
+**Realistic songs, the MP3 path end to end** (`meloscribe/eval/realistic.py`):
+18 generated songs - a real human voice (the CMU ARCTIC recording pysptk ships
+as example data) re-pitched with WORLD to known melodies with vibrato, scoops,
+breaths, rap and instrumental breaks, backing harmonies, over a band, encoded
+to MP3 - so the truth is exact. It needs `pip install pyworld` (its test skips
+without it) and, for the real voice, `pip install pysptk` or
+`MELOSCRIBE_VOICE_WAV`: nothing is downloaded automatically any more (it used
+to `pip download` pysptk's sdist, unpinned, which runs its build code), and
+without a voice `generate` falls back to a far less realistic formant voice
+with a warning. The cloud CPU scored only one case before its
+run hung (CREPE ran at ~12x real time): `breaths_close_m`, ensemble note F1
+0.667 vs basic-pitch 0.283, losing to late onsets, merged notes and wrong
+pitch about equally. The full matrix is minutes on the GPU:
+
+    venv/Scripts/python -m meloscribe.eval.realistic generate
+    venv/Scripts/python -m meloscribe.eval.realistic score --systems ensemble,basic_pitch --path clean,proxy,demucs
+    venv/Scripts/python -m meloscribe.eval.realistic analyse
+
+`demucs` runs the real separator on the MP3 mix - the only path that measures
+what users actually get.
+
+Real annotated data could not be downloaded in the cloud session (zenodo and
+huggingface were blocked); locally it can. The full vocadito corpus (40 solo
+tracks, CC BY, zenodo record 5578807) converts with
+`venv/Scripts/python -m meloscribe.eval.datasets vocadito <unzipped> data/eval/vocadito`
+and scores with `runner --dataset data/eval/vocadito --systems ensemble`
+(note F1 against human notes). iKala, TONAS and MedleyDB convert the same
+way. One track is what every real number above rests on - score the corpus
+before trusting any of them.
+
+---
+
 ## What this is
 
 `C:\Users\chris\Documents\meloScribe` — transcribes the sung/lead melody out of
@@ -40,6 +140,7 @@ meloscribe/
     align.py       LRC parsing, onset snapping, CTC forced alignment, Whisper
     service.py     tier selection + the track-name gate
   pipeline.py      stage orchestration with weighted progress
+  sections.py      splits the notes into lyric lines / song parts / phrases
   output.py        renderers
   cli.py           command line
   api/             FastAPI + threaded job store
@@ -123,15 +224,17 @@ beat tracking adds ~4s and is cached.
   was exercised, on an instrumental, so `MIN_ALIGNMENT_CONFIDENCE = 0.15` is
   uncalibrated. If it fires on a song that obviously matches its lyrics, it is
   too aggressive.
-- **No real annotated audio has been scored.** The synthetic set is a
+- **Only one real annotated track has been scored** (vocadito_1, note F1
+  0.537 - see "Next: accuracy work" above). The synthetic set is a
   regression detector and failure-mode probe, not a substitute. Drop
   `audio.wav` + `audio.csv` (`time,frequency`) pairs in a folder and run
   `--dataset <folder>`; vocadito and MedleyDB use that layout.
-- **HPSS denoising is off by default** (measured neutral-to-harmful) — but the
-  synthetic set has no percussive bleed, which is the only thing HPSS removes.
-  Untested on real stems.
-- **Backing-vocal bleed** (harmonies leaking into the vocal stem) is not
-  modelled in the benchmark at all and is a likely real-world failure.
+- **HPSS denoising is off by default**, and now measured harmful even on the
+  drum-bleed cases of `--suite hard` (note F1@25 0.811 -> 0.523). It also
+  never reaches basic-pitch, which re-reads the original file. Untested on
+  real stems.
+- **Backing-vocal bleed** is now modelled (`--suite hard`), and a harmony at
+  or above the lead's level still wins (see "Next: accuracy work", item 4).
 - Beat/tempo tracking exists only in the **legacy** `pipeline/beat_tracker.py`
   and was not carried into `meloscribe/`.
 - The web UI does not expose `--device`.
@@ -355,6 +458,92 @@ but nothing refines *where*.
   melody over a 66 BPM backbeat and librosa still found 132, so the octave
   diagnostics are exercised only against synthetically halved and doubled
   grids, never against a tracker that actually erred.
+
+## Section slider
+
+The web UI steps through the result one section at a time
+(`meloscribe/sections.py`, served in `/api/jobs/{id}/notes` as `sections`;
+audio for playback from `/api/jobs/{id}/audio/{mix|vocals}`).
+
+- **Invariant: every note is in exactly one section per granularity**, in time
+  order (property-tested over random layouts in `tests/test_sections.py`).
+  Notes outside every lyric line (ad-libs, hums, bleed in a break) get
+  'No lyric' sections of their own rather than disappearing; fragments under
+  0.6 s of singing are folded into a near neighbour, never into a section more
+  than 10 s long, and never pulling a lyric line's start more than 1.35 s ahead
+  of its first word.
+- Lines come from the timed lyrics. A note up to 0.15 s before a line's start
+  belongs to that line (pickup syllables land a hair early) unless it overlaps
+  the previous line more. Plain LRClib lyrics without forced alignment have
+  placeholder times, so they are not used to cut: the fallback is phrases split
+  at rests >= 0.45 s; phrases > 10 s split at their longest gap (near-ties go
+  to the middle, and both halves must keep >= 0.6 s of singing).
+- Parts break where consecutive *lyric lines* are >= 2.5 s apart - measured
+  between lyric lines, so stray notes in an instrumental break cannot glue the
+  break onto the next verse; those notes become a part of their own - and
+  around any run of >= 2 lyric lines that repeats elsewhere (how a chorus is
+  found). A part > 45 s splits at its longest gap. A part with the same words
+  as an earlier one gets `repeat_of`. Without lyrics, parts break at silences.
+- A wordless LRC timestamp (`[01:23.45]`, `♪`) now *ends* the line before it
+  instead of being dropped, so a line no longer runs through an instrumental
+  break. `refine_line_times` keeps those ends. Still unhandled (pre-existing):
+  the `[offset:]` tag, and `[00:00.00] Title` lines read as lyrics.
+- Seeking needs HTTP Range. Starlette's `FileResponse` only answers Range from
+  0.39; `meloscribe/api/media.py` serves ranges itself on older versions.
+- All thresholds are judgement calls tested on synthetic layouts only; tune
+  them against real songs.
+
+## Sheet music (MusicXML)
+
+`--format musicxml` / `--musicxml out.musicxml`, API `download/musicxml`, UI
+"Sheet music". `notation.py` quantises; `musicxml.py` writes MusicXML 4.0 with
+ElementTree (valid against the official 4.0 XSD; imports cleanly in MuseScore
+3.2.3, checked by rendering). Nothing else is quantised - every other output
+keeps the performed timing, and `rhythm`'s "never edits" rule is untouched.
+`--midi --quantize` writes MIDI from the same quantisation.
+
+Measured with `python -m meloscribe.eval.notation_eval` (fraction of written
+notes that come back with exactly the written position *and* value; 12
+melodies written in beats, 135 notes, swing excluded):
+
+| grid | clean | +25ms jitter |
+|---|---|---|
+| true tempo/phase (quantiser alone) | 0.99 | 0.91 |
+| tracked from the audio (real path) | 0.93 | 0.82 |
+| fallback: tempo from note spacing | 0.58 | 0.15 |
+
+On `rhythm_eval`'s six non-swing metrical cases (89 notes) the tracked grid
+scores 1.00 clean and 0.91 at +25ms, and the pitch engine's own notes from
+the rendered audio (`--transcribe`) come out 0.98 exactly as written.
+
+Decisions:
+
+1. **The tracked grid is regularised before snapping.** On the metrical cases
+   librosa's beats lag the click by 10-37ms and wobble by up to 178ms (a
+   melody note pulls them). A local linear fit over +/-8 beats keeps drift and
+   removes wobble; `rhythm.analyse` then fits phase and binary/ternary feel.
+2. **Triplets per beat, against a per-track prior.** Log-likelihood of the
+   beat's onsets under triplet-eighths vs sixteenths (25ms jitter model); a
+   straight track needs log-odds > 2. Clean: 4 of 5 triplet beats, 0
+   invented; at +25ms, 30 of 50 found, 10 invented - it is conservative by
+   design, and a lone triplet-quarter figure in a straight song stays in
+   sixteenths.
+3. **Onsets are assigned by DP, never merged**, so the minimum value (one grid
+   step) holds without dropping a note.
+4. **Ends are soft.** Gaps < 0.375 beat are absorbed (legato); a note before a
+   real rest is stretched by the track's release (total written / total
+   sounding length over its legato notes). `rhythm`'s duty estimate was tried
+   first and gave up under jitter, which rounded early-released quarters to
+   dotted eighths.
+5. **No meter or downbeat detection**: rhythm.py has neither. 4/4 and bar 1 on
+   the melody's first beat unless `--time-signature 3/4` / `--pickup N`. An
+   accent-based downbeat was not attempted: a backbeat puts the loudest
+   onsets on 2 and 4, and nothing here could show a heuristic gets past that.
+
+Known gaps: swing comes out literally (quarter-eighth triplets), not as
+"swing 8ths"; the tracked-grid losses (ties/dotted cases) are drift at the
+tail of a short clip, not the quantiser; key.py names Gb major's fourth `B`,
+so it prints as B natural under a six-flat signature.
 
 ## Working agreements
 

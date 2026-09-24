@@ -181,6 +181,41 @@ class EnsembleSystem(System):
                                 'mean_confidence': result.mean_confidence})
 
 
+class DenoisedEnsembleSystem(EnsembleSystem):
+    """The ensemble with HPSS percussive suppression switched on.
+
+    HPSS is off by default because it measured neutral-to-harmful on the core
+    set - which has no percussion in it, the only thing HPSS removes. Scoring
+    it as its own system is what lets the drum-bleed stress cases answer the
+    question in the same run, on identical audio.
+    """
+
+    name = 'ensemble_hpss'
+    description = 'ensemble with HPSS percussive suppression (denoise=True)'
+
+    def __init__(self, voters=None, **kwargs):
+        kwargs.setdefault('denoise', True)
+        super().__init__(voters=voters, **kwargs)
+
+
+class BackingPriorEnsembleSystem(EnsembleSystem):
+    """The ensemble with the opt-in backing-voice prior switched on.
+
+    Off by default because it helped synthetic backing vocals and hurt real
+    recordings with voices of comparable level (see
+    `FusionSettings.backing_weight`). Registered so that a real stem set with
+    backing vocals can settle it: `--systems ensemble,ensemble_backing`.
+    """
+
+    name = 'ensemble_backing'
+    description = 'ensemble with the backing-voice prior (backing_weight=8)'
+
+    def __init__(self, voters=None, **kwargs):
+        from ..pitch.fusion import FusionSettings
+        kwargs.setdefault('fusion', FusionSettings(backing_weight=8.0))
+        super().__init__(voters=voters, **kwargs)
+
+
 def _monophonic(notes: List[Note]) -> List[Note]:
     """Reduce polyphonic output to a single melody line.
 
@@ -204,6 +239,8 @@ REGISTRY: Dict[str, Callable[[], System]] = {
     'basic_pitch': BasicPitchSystem,
     'pyin': PyinSystem,
     'ensemble': EnsembleSystem,
+    'ensemble_hpss': DenoisedEnsembleSystem,
+    'ensemble_backing': BackingPriorEnsembleSystem,
     'oracle': OracleSystem,
 }
 

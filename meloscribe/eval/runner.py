@@ -2,6 +2,7 @@
 
     python -m meloscribe.eval.runner --systems basic_pitch,pyin
     python -m meloscribe.eval.runner --systems oracle          # harness self-test
+    python -m meloscribe.eval.runner --systems ensemble --suite hard
     python -m meloscribe.eval.runner --dataset data/vocadito --systems basic_pitch
 
 Results are written to JSON so runs can be diffed: `--baseline` prints the
@@ -18,6 +19,8 @@ import traceback
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .datasets import (AUDIO_EXTENSIONS, is_auxiliary, notes_path_for,
+                       read_notes_csv)
 from .groundtruth import GroundTruth, load_csv_f0
 from .metrics import ScoreResult, aggregate, format_table, score
 from .systems import REGISTRY, System, get_system
@@ -29,9 +32,14 @@ DEFAULT_RESULTS_DIR = Path('data/results')
 def load_dataset(path) -> List[GroundTruth]:
     """Load a corpus laid out as matching audio/annotation pairs.
 
-    Expects `<stem>.wav` (or .mp3/.flac) beside `<stem>.csv` holding
-    `time,frequency` rows - the vocadito layout, and simple enough to
-    reproduce by hand for MedleyDB or your own annotations.
+    Expects `<stem>.wav` (or .mp3/.flac/.ogg) beside `<stem>.csv` holding
+    `time,frequency` rows, and optionally `<stem>.notes.csv` holding
+    `onset,offset,midi` rows - see `datasets.py`, which also converts the
+    public corpora (vocadito, iKala, TONAS, MedleyDB) into this layout.
+
+    When reference notes exist they are what note F1 is scored against;
+    otherwise notes are re-derived from the f0 curve, which grades the
+    segmentation against a heuristic rather than against an annotator.
     """
     path = Path(path)
     if not path.exists():
@@ -40,15 +48,22 @@ def load_dataset(path) -> List[GroundTruth]:
     truths: List[GroundTruth] = []
     for csv_path in sorted(path.rglob('*.csv')):
         audio = None
-        for ext in ('.wav', '.mp3', '.flac', '.ogg'):
+        for ext in AUDIO_EXTENSIONS:
             candidate = csv_path.with_suffix(ext)
             if candidate.exists():
                 audio = candidate
                 break
         if audio is None:
-            print(f"  skipping {csv_path.name}: no matching audio file")
+            # x.notes.csv and the like annotate track x. Asked only once no
+            # audio matches, since a track's own name may contain a dot.
+            if not is_auxiliary(csv_path):
+                print(f"  skipping {csv_path.name}: no matching audio file")
             continue
-        truths.append(load_csv_f0(csv_path, name=csv_path.stem, audio_path=audio))
+        truth = load_csv_f0(csv_path, name=csv_path.stem, audio_path=audio)
+        notes_path = notes_path_for(csv_path)
+        if notes_path.exists():
+            truth.notes = read_notes_csv(notes_path) or None
+        truths.append(truth)
 
     if not truths:
         raise ValueError(f"No audio/CSV annotation pairs found under {path}")
@@ -136,6 +151,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help='Where synthetic benchmark audio is rendered')
     parser.add_argument('--rebuild-synth', action='store_true',
                         help='Re-render synthetic audio even if it exists')
+    parser.add_argument('--suite', default='core',
+                        choices=('core', 'hard', 'all'),
+                        help="Synthetic case set: 'core' is the headline "
+                             "benchmark every earlier number was measured on; "
+                             "'hard' adds backing-vocal and drum bleed, "
+                             "portamento and creaky onsets (default: core)")
     parser.add_argument('--tracks', help='Comma-separated track names to limit the run to')
     parser.add_argument('--output', help='Write results JSON here')
     parser.add_argument('--baseline', help='Compare against a previous results JSON')
@@ -151,9 +172,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Loading dataset: {args.dataset}")
         truths = load_dataset(args.dataset)
     else:
-        from .synth import build_dataset
-        print(f"Building synthetic benchmark in {args.synth_dir}")
-        truths = build_dataset(args.synth_dir, force=args.rebuild_synth)
+        from .synth import SUITES, build_dataset
+        print(f"Building synthetic benchmark ({args.suite}) in {args.synth_dir}")
+        truths = build_dataset(args.synth_dir, cases=SUITES[args.suite],
+                               force=args.rebuild_synth)
 
     if args.tracks:
         wanted = {t.strip() for t in args.tracks.split(',')}

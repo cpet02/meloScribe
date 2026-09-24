@@ -170,6 +170,101 @@ def test_refine_snaps_to_onsets_but_not_beyond_the_limit():
     assert by_text['far'] == pytest.approx(50.0)    # too far, left alone
 
 
+def test_parse_lrc_rest_marker_ends_the_line_before_it():
+    """A wordless timestamp marks an instrumental break. Dropping it let the
+    line before run on through the whole break."""
+    lines = parse_lrc('[00:10.00]Sung line\n[00:14.50]\n[00:40.00]After the solo')
+    assert [l.text for l in lines] == ['Sung line', 'After the solo']
+    assert lines[0].end == pytest.approx(14.5)
+
+
+@pytest.mark.parametrize('marker', ['[00:14.50]', '[00:14.50]   ', '[00:14.50] ♪',
+                                    '[00:14.50]♪ ♪', '[00:14.50] ...',
+                                    '[00:14.50][01:50.00]'])
+def test_parse_lrc_wordless_timestamps_are_rests(marker):
+    lines = parse_lrc(f'[00:10.00]Sung line\n{marker}\n[00:40.00]After')
+    assert [l.text for l in lines] == ['Sung line', 'After']
+    assert lines[0].end == pytest.approx(14.5)
+
+
+def test_parse_lrc_trailing_blank_closes_the_last_line():
+    lines = parse_lrc('[00:10.00]First\n[00:12.00]Last\n[00:15.25]\n')
+    assert [l.end for l in lines] == [pytest.approx(12.0), pytest.approx(15.25)]
+    assert parse_lrc('[00:10.00]First\n[00:12.00]Last')[-1].end is None
+
+
+def test_parse_lrc_rests_that_close_nothing_change_nothing():
+    """A leading `[00:00.00]`, and a marker at the very time the next line
+    starts, are both common in LRClib files and must shorten nothing."""
+    lines = parse_lrc('[00:00.00]\n[00:10.00]First\n[00:12.00]\n'
+                      '[00:12.00]Second\n[00:20.00]Third')
+    assert [l.end for l in lines] == [pytest.approx(12.0), pytest.approx(20.0),
+                                      None]
+
+
+def test_parse_lrc_title_line_is_closed_by_its_rest_marker():
+    lines = parse_lrc('[00:00.00] Artist - Title\n[00:00.50]\n[00:15.00]First')
+    assert lines[0].end == pytest.approx(0.5), 'the intro is not the title'
+
+
+def test_notes_in_an_instrumental_break_get_no_lyric():
+    lines = parse_lrc('[00:10.00]Sung line\n[00:14.50]\n[00:40.00]After the solo')
+    notes = [TranscribedNote(60, 12.0, 12.5, 0.9),
+             TranscribedNote(64, 25.0, 25.5, 0.9),
+             TranscribedNote(62, 40.1, 40.5, 0.9)]
+    _attach_lines(notes, lines)
+    assert [n.lyric for n in notes] == ['Sung line', None, 'After the solo']
+
+
+def test_rest_markers_do_not_shift_aligned_words():
+    """A '♪' line used to be a lyric line whose one "word" alignment never
+    returns, so every later line was timed from its neighbour's words."""
+    from meloscribe.lyrics.service import _lines_from_words
+
+    lines = parse_lrc('[00:01.00]one two\n[00:03.00]♪\n[00:05.00]three four')
+    words = [LyricWord('one', 1.0, 1.4), LyricWord('two', 1.5, 2.0),
+             LyricWord('three', 5.0, 5.4), LyricWord('four', 5.5, 6.0)]
+    timed = _lines_from_words(words, lines)
+    assert [(l.text, l.start) for l in timed] == [('one two', 1.0),
+                                                  ('three four', 5.0)]
+
+
+def test_refine_keeps_rest_marker_ends_and_recomputes_the_rest():
+    lines = parse_lrc('[00:10.00]First\n[00:13.00]\n[00:20.00]Second\n'
+                      '[00:24.00]Third')
+    refined = refine_line_times(lines, np.array([10.2, 19.8, 24.3]))
+    assert [l.start for l in refined] == [pytest.approx(10.2),
+                                          pytest.approx(19.8),
+                                          pytest.approx(24.3)]
+    assert refined[0].end == pytest.approx(13.0)    # the rest marker survives
+    assert refined[1].end == pytest.approx(24.3)    # follows the snapped start
+    assert refined[2].end is None
+
+
+def test_refine_caps_a_rest_end_at_the_next_line():
+    lines = [LyricLine(start=10.0, text='a', end=19.9),
+             LyricLine(start=20.0, text='b')]
+    refined = refine_line_times(lines, np.array([10.0, 19.5]))
+    assert refined[0].end == pytest.approx(19.5)
+
+
+def test_refine_does_not_snap_a_line_past_its_own_end():
+    """The nearest onset lay beyond the line's rest marker. Taking it lost the
+    end: the short line ran on through the break, and the last line ended
+    before it began, so its notes lost their lyric."""
+    lines = parse_lrc('[00:10.00]Hey!\n[00:10.30]\n[00:30.00]Next\n'
+                      '[00:34.00]Last\n[00:34.40]')
+    refined = refine_line_times(lines, np.array([10.5, 30.0, 34.5]))
+    assert [(l.start, l.end) for l in refined] == [
+        (pytest.approx(10.0), pytest.approx(10.3)),
+        (pytest.approx(30.0), pytest.approx(34.0)),
+        (pytest.approx(34.0), pytest.approx(34.4))]
+
+    notes = [TranscribedNote(60, 34.1, 34.3, 0.9)]
+    _attach_lines(notes, refined)
+    assert notes[0].lyric == 'Last'
+
+
 def test_melisma_gives_several_notes_the_same_word():
     notes = [TranscribedNote(60, 0.0, 0.3, 0.9),
              TranscribedNote(62, 0.3, 0.6, 0.9),

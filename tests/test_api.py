@@ -15,7 +15,14 @@ import soundfile as sf
 fastapi = pytest.importorskip('fastapi')
 from fastapi.testclient import TestClient  # noqa: E402
 
+from meloscribe.api import app as app_module, media  # noqa: E402
 from meloscribe.api.app import app  # noqa: E402
+from meloscribe.api.jobs import JobStatus  # noqa: E402
+from meloscribe.lyrics.align import LyricLine, TimedLyrics  # noqa: E402
+from meloscribe.lyrics.service import LyricsOutcome  # noqa: E402
+from meloscribe.pipeline import TranscriptionOutput  # noqa: E402
+from meloscribe.pitch.engine import TranscribedNote  # noqa: E402
+from meloscribe.stems import StemResult  # noqa: E402
 
 client = TestClient(app)
 
@@ -117,6 +124,15 @@ def test_path_traversal_upload_id_is_rejected():
     assert response.status_code in (400, 404)
 
 
+@pytest.mark.parametrize('upload_id', ['../uploads_private/x.wav', '', '.'])
+def test_upload_id_cannot_name_a_sibling_directory_or_the_folder_itself(upload_id):
+    # A string-prefix check accepted all of these: a sibling folder sharing
+    # the name's prefix, and the upload folder itself.
+    response = client.post('/api/jobs',
+                           json={'upload_id': upload_id, 'lyrics_mode': 'off'})
+    assert response.status_code == 400
+
+
 def test_unknown_lyrics_mode_is_rejected(clip):
     upload = _upload(clip)
     response = client.post('/api/jobs', json={
@@ -202,3 +218,167 @@ def test_unknown_download_format_is_rejected(clip):
     state = _run_to_completion(clip)
     assert client.get(
         f"/api/jobs/{state['id']}/download/sibelius").status_code == 400
+
+
+# --------------------------------------------------------------------------
+# Sections and audio, on a finished job put straight into the store
+# --------------------------------------------------------------------------
+# Nothing is transcribed here, so these need neither the pitch voters nor
+# separation - only the API's own handling of a finished result.
+
+SONG = bytes(range(256)) * 400
+
+
+@pytest.fixture
+def uploads(tmp_path, monkeypatch):
+    """An upload directory of the test's own."""
+    directory = tmp_path / 'uploads'
+    directory.mkdir()
+    monkeypatch.setattr(app_module, 'UPLOAD_DIR', directory)
+    return directory
+
+
+def _inject_job(uploads, vocals=None, vocals_only=False, transpose=0,
+                status=JobStatus.DONE):
+    (uploads / 'song.wav').write_bytes(SONG)
+    notes = [TranscribedNote(60, 10.2, 10.6, 0.9),
+             TranscribedNote(62, 11.0, 11.5, 0.9),
+             TranscribedNote(64, 14.1, 14.5, 0.9),
+             TranscribedNote(65, 30.0, 31.0, 0.9)]     # sung after every line
+    lines = [LyricLine(start=10.0, text='first line', end=14.0),
+             LyricLine(start=14.0, text='second line', end=15.0)]
+    result = TranscriptionOutput(
+        notes=notes, duration=40.0,
+        lyrics=LyricsOutcome(lyrics=TimedLyrics(lines=lines),
+                             tier='lrclib-synced+snapped'))
+    if vocals is not None:
+        result.stems = StemResult(stems={'vocals': vocals}, model='test',
+                                  device='cpu', cached=True)
+    job = app_module.jobs.create(filename='song.wav', params={
+        'upload_id': 'song.wav', 'transpose': transpose,
+        'vocals_only': vocals_only})
+    job.result = result
+    job.status = status
+    return job
+
+
+def test_notes_payload_carries_sections_and_audio(uploads, tmp_path):
+    vocals = tmp_path / 'vocals.wav'
+    vocals.write_bytes(b'vocal stem')
+    job = _inject_job(uploads, vocals=vocals, transpose=-2)
+
+    body = client.get(f"/api/jobs/{job.id}/notes").json()
+    sections = body['sections']
+    assert sections['basis'] == 'lyrics'
+    for grain in ('line', 'part'):
+        seen = sorted(i for s in sections[grain] for i in s['notes'])
+        assert seen == list(range(len(body['notes']))), grain
+    assert [s['label'] for s in sections['line']] == ['Line 1', 'Line 2',
+                                                      'No lyric']
+    assert body['audio'] == ['mix', 'vocals']
+    assert body['transpose'] == -2
+    assert body['word_level'] is False
+
+
+def test_audio_without_a_range_is_the_whole_file(uploads):
+    job = _inject_job(uploads)
+    response = client.get(f"/api/jobs/{job.id}/audio/mix")
+    assert response.status_code == 200
+    assert response.content == SONG
+    assert response.headers['accept-ranges'] == 'bytes'
+    assert response.headers['content-type'].startswith('audio/')
+
+
+@pytest.mark.parametrize('native', [True, False])
+def test_audio_range_request_gets_exactly_those_bytes(uploads, monkeypatch,
+                                                      native):
+    """How the browser seeks to a section, on either Starlette code path."""
+    if native and not media.NATIVE_RANGES:
+        pytest.skip('this Starlette cannot serve ranges itself')
+    monkeypatch.setattr(media, 'NATIVE_RANGES', native)
+    job = _inject_job(uploads)
+    response = client.get(f"/api/jobs/{job.id}/audio/mix",
+                          headers={'Range': 'bytes=1000-1999'})
+    assert response.status_code == 206
+    assert response.content == SONG[1000:2000]
+    assert response.headers['content-range'] == f"bytes 1000-1999/{len(SONG)}"
+
+
+def test_vocal_stem_is_served_when_separation_made_one(uploads, tmp_path):
+    vocals = tmp_path / 'vocals.wav'
+    vocals.write_bytes(b'vocal stem')
+    job = _inject_job(uploads, vocals=vocals)
+    response = client.get(f"/api/jobs/{job.id}/audio/vocals")
+    assert response.status_code == 200 and response.content == b'vocal stem'
+
+
+def test_an_isolated_vocal_upload_is_its_own_vocals(uploads):
+    job = _inject_job(uploads, vocals_only=True)
+    response = client.get(f"/api/jobs/{job.id}/audio/vocals")
+    assert response.status_code == 200 and response.content == SONG
+
+
+def test_missing_vocals_are_404(uploads, tmp_path):
+    unseparated = _inject_job(uploads)
+    assert client.get(
+        f"/api/jobs/{unseparated.id}/audio/vocals").status_code == 404
+
+    evicted = _inject_job(uploads, vocals=tmp_path / 'cleared-from-cache.wav')
+    assert client.get(f"/api/jobs/{evicted.id}/audio/vocals").status_code == 404
+    assert client.get(f"/api/jobs/{evicted.id}/notes").json()['audio'] == ['mix']
+
+
+def test_unknown_audio_source_is_404(uploads):
+    job = _inject_job(uploads)
+    for source in ('drums', 'song.wav', '..%2F..%2Fetc%2Fpasswd'):
+        assert client.get(
+            f"/api/jobs/{job.id}/audio/{source}").status_code == 404, source
+
+
+def test_audio_never_comes_from_outside_the_upload_directory(uploads):
+    job = _inject_job(uploads)
+    job.params['upload_id'] = '../../../../../../etc/passwd'
+    assert client.get(f"/api/jobs/{job.id}/audio/mix").status_code == 404
+    assert client.get(f"/api/jobs/{job.id}/notes").json()['audio'] == []
+
+
+def test_audio_of_an_unfinished_job_conflicts(uploads):
+    job = _inject_job(uploads, status=JobStatus.RUNNING)
+    assert client.get(f"/api/jobs/{job.id}/audio/mix").status_code == 409
+    assert client.get('/api/jobs/deadbeef/audio/mix').status_code == 404
+
+
+def test_musicxml_download_is_sheet_music(uploads):
+    """Sheet music from a finished job. The upload here is not decodable
+    audio, so there is no beat to track: the export must still succeed, on
+    the note spacing, and say in the score that its rhythm is approximate."""
+    import xml.etree.ElementTree as ET
+
+    job = _inject_job(uploads, transpose=9)
+    response = client.get(f"/api/jobs/{job.id}/download/musicxml")
+    assert response.status_code == 200, response.text
+    assert response.headers['content-type'] == \
+        'application/vnd.recordare.musicxml+xml'
+    assert response.headers['content-disposition'].endswith('.musicxml"')
+    root = ET.fromstring(response.content)
+    assert root.tag == 'score-partwise'
+    assert root.find('.//transpose/chromatic').text == '-9'
+    assert root.find('.//miscellaneous-field').text == 'approximate'
+    # Line-level lyrics: each line's text where its first note starts.
+    words = [w.text for w in root.iter('words')]
+    assert 'first line' in words and 'second line' in words
+
+
+@pytest.mark.parametrize('fmt', ['musicxml', 'csv'])
+def test_downloads_are_named_after_any_track(uploads, fmt):
+    """Headers are Latin-1: a curly apostrophe or a Japanese title must be
+    carried as RFC 5987 UTF-8, not crash the download."""
+    from urllib.parse import unquote
+
+    job = _inject_job(uploads)
+    job.params['track_name'] = 'Don’t Stop 夜に駆ける'
+    response = client.get(f"/api/jobs/{job.id}/download/{fmt}")
+    assert response.status_code == 200, response.text
+    disposition = response.headers['content-disposition']
+    assert disposition.startswith("attachment; filename*=utf-8''")
+    assert unquote(disposition.split("''", 1)[1]) == f'Don’t Stop 夜に駆ける.{fmt}'

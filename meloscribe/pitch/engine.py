@@ -10,24 +10,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from .. import audio as audio_mod
 from ..audio import Audio
+from ..key import SPELLINGS
 from .fusion import DecodedFrame, FusionSettings, decode, key_prior_vector
 from .grid import HOP, n_frames_for
 from .voters import AUTO, DEFAULT_VOTERS, Voter, build_voters
 
 ProgressFn = Callable[[float, str], None]
 
-NOTE_NAMES = ('C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B')
 
-
-def midi_to_name(midi: float) -> str:
+def midi_to_name(midi: float, names: Sequence[str] = SPELLINGS['sharp']) -> str:
+    """`names` is what each pitch class is called, index = pitch class - a
+    key's `pitch_names`."""
     rounded = int(round(midi))
-    return f"{NOTE_NAMES[rounded % 12]}{rounded // 12 - 1}"
+    name = names[rounded % 12]
+    # The octave number goes with the letter, not the sounding pitch: C#
+    # minor's leading tone at MIDI 60 is B#3, the same pitch as C4.
+    alter = name.count('#') - name.count('b')
+    return f"{name}{(rounded - alter) // 12 - 1}"
 
 
 @dataclass
@@ -45,10 +50,16 @@ class TranscribedNote:
     # None means "not assessed", which is not the same as "on the beat".
     beat_deviation: Optional[float] = None   # beats from the nearest grid slot
     duration_beats: Optional[float] = None
+    # What each pitch class is called, set by the pipeline from the key the
+    # notes are written in (see key.note_names). One table shared by every
+    # note, and left out of to_dict() and repr, where `name` already says
+    # what it decided. It changes the name only: `midi`, and with it the MIDI
+    # export, is the same whatever the table.
+    pitch_names: Tuple[str, ...] = field(default=SPELLINGS['sharp'], repr=False)
 
     @property
     def name(self) -> str:
-        return midi_to_name(self.midi)
+        return midi_to_name(self.midi, self.pitch_names)
 
     @property
     def duration(self) -> float:
@@ -111,11 +122,24 @@ class EngineSettings:
     # above it genuine re-articulations start being missed (0.92 at 0.55).
     # The old 0.12 was tuned against the previous, scale-dependent envelope
     # and does not mean the same thing here.
+    #
+    # Re-swept with the fresh-climb gate in `_has_attack`: every core case
+    # stays 1.000 from 0.35 to 0.45. 0.40 bought one more split on the
+    # stress suite (0.892 -> 0.898) but cost a spurious split on real solo
+    # singing (vocadito_1 note F1 0.583 -> 0.574), so it stays at 0.45.
     attack_threshold: float = 0.45
     # HPSS denoising is off by default: it measured neutral-to-harmful on the
     # synthetic set. That set has no percussive bleed though - which is the
     # only thing HPSS removes - so this must be re-tested on real stems
     # before the default is treated as settled.
+    #
+    # Re-tested on synthetic drum bleed (`runner --suite hard`, system
+    # ensemble_hpss): still harmful. Stress VFA 0.191 -> 0.352 and onset
+    # F1@25 0.811 -> 0.523: the harmonic part is median-filtered over ~1s, so
+    # notes smear into the rests and onsets move early. It also never reaches
+    # basic-pitch, which reads the original file, so the onset matrix sees
+    # the drums either way. The drum cases score note F1 1.000 without it
+    # once the attack gate checks for a fresh climb (see `_has_attack`).
     denoise: bool = False
     # Notes below this are kept but flagged, never silently dropped - the UI
     # shows them greyed so a wrong call is visible rather than invisible.
@@ -143,9 +167,24 @@ class PitchEngine:
 
         prepared = audio_mod.prepare_for_pitch(audio_path,
                                                denoise=self.settings.denoise)
-        # Voters that read from disk (basic-pitch) need the original file, so
-        # the conditioned array carries its provenance along with it.
-        prepared.path = audio_path
+        # Voters that read from disk (basic-pitch) need a file, so the
+        # conditioned array carries its provenance along with it: the
+        # original, unless loading had to repair it (NaN samples, cancelling
+        # channels) - then they get the repaired audio, or they would crash
+        # or hear silence.
+        prepared.path = audio_mod.usable_path(prepared, audio_path)
+
+        # A clip shorter than the shortest note we emit cannot contain one,
+        # and basic-pitch's note decoding crashes outright ("zero-size array")
+        # on a clip shorter than one of its ~12ms frames.
+        if prepared.duration < self.settings.min_note_duration:
+            empty = np.zeros(0)
+            return TranscriptionResult(
+                notes=[], frames=DecodedFrame(times=empty, midi=empty,
+                                              confidence=empty,
+                                              voiced=empty.astype(bool)),
+                duration=prepared.duration, voters_used=[])
+
         n_frames = n_frames_for(prepared.duration)
 
         outputs = []
@@ -158,14 +197,15 @@ class PitchEngine:
         if progress:
             progress(0.8, 'decoding')
 
+        onsets = self._onset_matrix(outputs, n_frames)
+        attacks = self._attack_envelope(prepared, n_frames)
         prior = key_prior_vector(key_pitch_classes) if key_pitch_classes else None
-        frames = decode(outputs, self.settings.fusion, prior)
+        frames = decode(outputs, self.settings.fusion, prior,
+                        reattacks=self._reattacks(onsets, attacks))
 
         if progress:
             progress(0.9, 'segmenting notes')
 
-        onsets = self._onset_matrix(outputs, n_frames)
-        attacks = self._attack_envelope(prepared, n_frames)
         notes = self._segment(frames, onsets, attacks)
 
         if progress:
@@ -294,17 +334,54 @@ class PitchEngine:
 
         return notes
 
-    def _has_attack(self, attacks: Optional[np.ndarray], i: int) -> bool:
-        """Whether the amplitude envelope actually rises at frame i.
+    # The RMS frames are 40ms (4 hops) long, so the level finishes climbing up
+    # to 40ms after basic-pitch's onset peak. Looking only 20ms ahead missed
+    # re-articulations whose dip was part-filled by bleed: measured on the
+    # stress suite, a split landed 70ms late in repeats_drums/repeats_harmony
+    # (attack 0.44 inside the old window, 0.47 just after it).
+    ATTACK_LAG_FRAMES = 4
 
-        Checked over a short window rather than the single frame, since the
-        onset activation peak and the loudness peak need not land on the same
-        10ms frame.
+    def _has_attack(self, attacks: Optional[np.ndarray], i: int) -> bool:
+        """Whether the amplitude envelope genuinely climbs at frame i.
+
+        Checked over a window rather than the single frame, since the onset
+        activation peak and the loudness climb need not land on the same 10ms
+        frame. The climb is measured against the envelope's lowest point over
+        the preceding ATTACK_WINDOW_S, not against zero: a slow attack keeps
+        the envelope high for ~80ms after it ends, and that stale tail was
+        validating a second onset peak 150ms into a soft note (scale_drums_loud
+        split a held note in two). Measured with both changes: stress-suite
+        note F1 0.864 -> 0.892, every core case unchanged, and one spurious
+        split fewer on real solo singing (vocadito_1 0.579 -> 0.583).
         """
         if attacks is None or i >= len(attacks):
             return True  # no envelope available: fall back to onsets alone
-        window = attacks[max(0, i - 2):i + 3]
-        return bool(window.size and window.max() >= self.settings.attack_threshold)
+        lo = max(0, i - 2)
+        window = attacks[lo:i + self.ATTACK_LAG_FRAMES + 1]
+        if not window.size:
+            return False
+        span = max(1, int(round(self.ATTACK_WINDOW_S / HOP)))
+        before = attacks[max(0, lo - span):lo]
+        base = float(before.min()) if before.size else 0.0
+        return bool(window.max() - base >= self.settings.attack_threshold)
+
+    def _reattacks(self, onsets: Optional[np.ndarray],
+                   attacks: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        """Onset peaks that come with a genuine climb in level: new notes.
+
+        The decoder's backing-voice prior needs to know when a pitch was
+        freshly attacked, and an onset peak alone cannot say: basic-pitch also
+        fires on a backing voice the moment the lead releases and *unmasks*
+        it, and that is exactly when the level is falling, not climbing.
+        Measured: with ungated onsets the prior's evidence was reset right
+        before every backing-voice tail, and it did nothing (stress VFA 0.191
+        -> 0.190).
+        """
+        if onsets is None or attacks is None:
+            return None
+        climbs = np.array([self._has_attack(attacks, t)
+                           for t in range(onsets.shape[0])])
+        return onsets & climbs[:, None]
 
     @staticmethod
     def _is_reonset(onsets: Optional[np.ndarray], rounded: np.ndarray,

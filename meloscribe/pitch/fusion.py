@@ -76,6 +76,28 @@ class FusionSettings:
     # nudges, it does not filter. The previous pipeline deleted out-of-key
     # notes outright, which destroyed every accidental in the song.
     key_prior_weight: float = 0.35
+    # A voiced run at most this many frames long that touches a run exactly
+    # an octave away is relabelled to it (see `repair_octave_blips`). 150ms:
+    # creaky onsets decode as 110-130ms sub-octave runs, so 100ms left them in
+    # place; 150-200ms measured identically; genuine octave leaps hold both
+    # notes far longer. 0 disables.
+    octave_blip_frames: int = 15
+    # Log-odds against voicing when the loudest line is one that was already
+    # sounding *under* the lead, with no fresh attack of its own since (see
+    # `backing_voice_penalty`). OFF by default, and the reason is measured:
+    #   synthetic backing vocals, 8.0 (flat 8-12, memory 0.15-0.3s): stress
+    #     VFA 0.191 -> 0.095, note F1 0.892 -> 0.943, every core case
+    #     identical - the backing-vocal tails vanish;
+    #   real recordings, same setting: voicing recall 0.531 -> 0.136 on
+    #     weber_freischuetz, 0.782 -> 0.519 on a vocal quartet, and a lost
+    #     note on solo vocadito_1 (F1 0.583 -> 0.567).
+    # Its premise - one clearly dominant lead over quieter backing - fails
+    # when voices are comparable in level: dominance flips, every line
+    # builds "secondary" history, and voicing is taxed wholesale. The
+    # synthetic suite has no such material. Validate on real separated stems
+    # with backing vocals before enabling; 8.0 is the measured setting.
+    backing_weight: float = 0.0
+    backing_memory_s: float = 0.2
 
 
 @dataclass
@@ -216,15 +238,113 @@ def forward_backward(observations: np.ndarray,
     return np.exp(log_posterior)
 
 
+def repair_octave_blips(path: np.ndarray, max_frames: int) -> np.ndarray:
+    """Relabel short voiced runs that sit exactly an octave off a neighbour.
+
+    A creaky (vocal fry) onset weakens every other glottal pulse, so for its
+    first ~100ms the waveform really does repeat at f0/2 - and both voters
+    agree on the octave below, which no amount of fusion can outvote. The
+    decoder then emits a sub-octave fragment and starts the real note ~110ms
+    late, so both miss the onset tolerance: measured note F1 0.087 and octave
+    error 0.158 on the phrase_creaky stress case, 1.000 and 0.000 with this.
+    A sung octave leap holds both pitches far longer than `max_frames`, and
+    only runs that touch their neighbour with no unvoiced gap are considered,
+    so the core set - octave leaps included - is unchanged.
+    """
+    if max_frames <= 0 or path.size == 0:
+        return path
+    change = np.flatnonzero(np.diff(path)) + 1
+    starts = np.concatenate([[0], change])
+    ends = np.concatenate([change, [path.size]])
+    states = path[starts]
+    repaired = path.copy()
+    for k in range(len(starts)):
+        length = ends[k] - starts[k]
+        if states[k] == UNVOICED or length > max_frames:
+            continue
+        # The run it resolves into first: creak precedes the note it starts.
+        for j in (k + 1, k - 1):
+            if (0 <= j < len(starts) and states[j] != UNVOICED
+                    and abs(int(states[j]) - int(states[k])) == 12
+                    and ends[j] - starts[j] > length):
+                repaired[starts[k]:ends[k]] = states[j]
+                break
+    return repaired
+
+
+def backing_voice_penalty(outputs: Sequence[VoterOutput],
+                          log_pitch: np.ndarray,
+                          reattacks: Optional[np.ndarray],
+                          settings: FusionSettings) -> np.ndarray:
+    """Per-frame log-odds against voicing from a held-over backing voice.
+
+    A separated vocal stem carries every voice, and a backing vocal routinely
+    outlasts the lead's note. Nothing in the voters' voicing can object: the
+    backing line is a clean, periodic voice, so both voters call those frames
+    voiced (0.8-0.95) and the decoder transcribes it the moment the lead
+    stops. Measured on the late-harmony stress cases: voicing false alarm
+    0.56-0.61, half the output notes spurious.
+
+    What gives it away is continuity, not level. The polyphonic voter
+    (basic-pitch) has been hearing that pitch *underneath* a different,
+    louder one, and when the lead stops it simply carries on - no attack of
+    its own. So each pitch accumulates, as an exponential moving average,
+    how strongly it has been sounding as a secondary line (at least two
+    semitones from the dominant pitch, and not one of its harmonics, which
+    basic-pitch also reports), and the evidence is wiped by a genuine
+    re-attack of that pitch. A frame whose dominant pitch carries that
+    history is voiced by a backing singer. A soft lead note was never a
+    secondary line, so it is untouched: the level-based cue tried first
+    ("the lead is the loudest voice") cost legato_dynamics 0.07 voicing
+    recall and moved core octaves_bleed; this moved neither.
+
+    It is off by default all the same (`FusionSettings.backing_weight`):
+    on real recordings where voices are comparable in level it taxed
+    voicing heavily, which the synthetic suite cannot show.
+
+    `reattacks` is required: without knowing which onsets are real attacks,
+    a lead moving onto the note its backing singer just held would be taxed.
+    """
+    n_frames = log_pitch.shape[0]
+    poly = next((o for o in outputs if 'onsets' in o.meta), None)
+    if poly is None or reattacks is None or settings.backing_weight <= 0:
+        return np.zeros(n_frames)
+
+    dominant = np.argmax(log_pitch, axis=1)
+    distance = np.abs(PITCHES[None, :] - PITCHES[dominant][:, None])
+    harmonic = np.isin(distance, (12.0, 19.0, 24.0))
+    activation = poly.salience.astype(np.float64)
+    secondary = np.where((distance >= 2.0) & ~harmonic & (activation >= 0.3),
+                         activation, 0.0)
+
+    decay = np.exp(-HOP / settings.backing_memory_s)
+    held = np.zeros(N_PITCHES)
+    history = np.zeros(n_frames)
+    for t in range(n_frames):
+        held[reattacks[t]] = 0.0
+        history[t] = held[dominant[t]]
+        held = decay * held + (1.0 - decay) * secondary[t]
+    return settings.backing_weight * history
+
+
 def decode(outputs: Sequence[VoterOutput],
            settings: Optional[FusionSettings] = None,
-           key_prior: Optional[np.ndarray] = None) -> DecodedFrame:
-    """Run the full fuse -> decode -> score chain."""
+           key_prior: Optional[np.ndarray] = None,
+           reattacks: Optional[np.ndarray] = None) -> DecodedFrame:
+    """Run the full fuse -> decode -> score chain.
+
+    `reattacks` is the (n_frames, N_PITCHES) matrix of onsets confirmed by an
+    attack; the engine supplies it, and without it the backing-voice prior
+    stays off.
+    """
     settings = settings or FusionSettings()
     observations = fuse_observations(outputs, settings, key_prior)
+    observations[:, UNVOICED] += backing_voice_penalty(
+        outputs, observations[:, :N_PITCHES], reattacks, settings)
     transition = build_transition_matrix(settings)
 
-    path = viterbi(observations, transition)
+    path = repair_octave_blips(viterbi(observations, transition),
+                               settings.octave_blip_frames)
     posterior = forward_backward(observations, transition)
 
     n_frames = observations.shape[0]

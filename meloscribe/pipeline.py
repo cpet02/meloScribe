@@ -16,9 +16,10 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from .key import KeyEstimate, estimate_key
+from .key import (SPELLINGS, KeyEstimate, estimate_key, note_names,
+                  note_spelling)
 from .lyrics.lrclib import TrackQuery, describe_track
 from .lyrics.service import LyricsMode, LyricsOutcome, LyricsService
 from .pitch.engine import (EngineSettings, PitchEngine, TranscribedNote,
@@ -91,6 +92,12 @@ class TranscriptionOutput:
     elapsed_s: float = 0.0
     request: Optional[TranscriptionRequest] = None
     warnings: List[str] = field(default_factory=list)
+    # How the notes were named: the written key's accidentals, 'sharp' or
+    # 'flat', and its name for each pitch class, index = pitch class.
+    # Recorded rather than recomputed, so what is reported always matches
+    # the names.
+    spelling: str = 'sharp'
+    pitch_names: Tuple[str, ...] = SPELLINGS['sharp']
 
     @property
     def mean_confidence(self) -> float:
@@ -98,10 +105,19 @@ class TranscriptionOutput:
             return 0.0
         return sum(n.confidence for n in self.notes) / len(self.notes)
 
+    @property
+    def written_key(self) -> Optional[KeyEstimate]:
+        """The key the transposed notes are written in; None when they are
+        not transposed, and `key` - the concert key - already is it."""
+        transpose = self.request.transpose if self.request else 0
+        return self.key.transposed(transpose) if self.key and transpose else None
+
     def to_dict(self) -> Dict[str, Any]:
+        written = self.written_key
         return {
             'notes': [n.to_dict() for n in self.notes],
             'key': self.key.name if self.key else None,
+            'written_key': written.name if written else None,
             'key_confidence': round(self.key.confidence, 3) if self.key else None,
             'lyrics': self.lyrics.summary() if self.lyrics else None,
             'rhythm': self.rhythm.to_dict() if self.rhythm else None,
@@ -198,7 +214,8 @@ class Pipeline:
                 if key_prior is None:
                     output.warnings.append(
                         f"Key estimate ({output.key.name}) too uncertain to use "
-                        f"as a prior; transcribing without it.")
+                        f"as a prior; transcribing without it, and spelling "
+                        f"notes with sharps.")
             except Exception as exc:
                 output.warnings.append(f"Key estimation failed: {exc}")
             tracker.finish_stage()
@@ -255,6 +272,12 @@ class Pipeline:
         report = tracker.stage('output')
         if request.transpose:
             notes = [n.transposed(request.transpose) for n in notes]
+        # Spelled for the key the player reads - the written key, once
+        # transposed - so the names agree with its key signature.
+        output.spelling = note_spelling(output.key, request.transpose)
+        output.pitch_names = note_names(output.key, request.transpose)
+        for note in notes:
+            note.pitch_names = output.pitch_names
         output.notes = notes
         report(1.0, f"{len(notes)} notes")
         tracker.finish_stage()

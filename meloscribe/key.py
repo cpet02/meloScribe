@@ -20,7 +20,24 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-PITCH_CLASSES = ('C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B')
+# How each pitch class is named under the two kinds of key signature. Where
+# there is no signature to follow - C major, A minor, or no key worth
+# trusting - notes are named with sharps, the usual default for pitch names.
+SPELLINGS = {
+    'sharp': ('C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'),
+    'flat': ('C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'),
+}
+
+# Each letter's natural pitch class, in scale order: for the one note a key
+# spells from a given letter rather than from either table above.
+NATURALS = {'C': 0, 'D': 2, 'E': 4, 'F': 5, 'G': 7, 'A': 9, 'B': 11}
+
+# The major keys whose signature is flats: F, and every tonic on a black key.
+# Two of those have an enharmonic twin. Db (five flats) beats C# (seven
+# sharps); Gb against F# is a genuine six-six tie, settled as Gb so the rule
+# stays "F and the black keys" - which also names its relative minor Eb
+# minor, the commoner spelling, rather than D# minor.
+FLAT_MAJOR_TONICS = frozenset({1, 3, 5, 6, 8, 10})
 
 # Krumhansl-Kessler probe-tone profiles: how well each scale degree fits a key,
 # derived from listener ratings rather than theory.
@@ -43,7 +60,56 @@ class KeyEstimate:
 
     @property
     def name(self) -> str:
-        return f"{PITCH_CLASSES[self.tonic]} {'major' if self.is_major else 'minor'}"
+        # Spelled by its own signature: Eb major, never D# major.
+        tonic = SPELLINGS[self.spelling][self.tonic]
+        return f"{tonic} {'major' if self.is_major else 'minor'}"
+
+    @property
+    def spelling(self) -> str:
+        """'flat' or 'sharp': which accidentals this key's signature uses."""
+        # A minor key shares its signature with the major a minor third up.
+        relative_major = self.tonic if self.is_major else (self.tonic + 3) % 12
+        return 'flat' if relative_major in FLAT_MAJOR_TONICS else 'sharp'
+
+    @property
+    def fifths(self) -> int:
+        """The key signature as notation counts it: sharps positive, flats
+        negative (MusicXML's <fifths>). Each fifth up the circle adds a sharp,
+        and 7 is its own inverse mod 12, so the relative major's pitch class
+        times 7 is its place on the circle; `spelling` decides which side of
+        the circle the enharmonic keys sit on, so this always agrees with the
+        note names."""
+        relative_major = self.tonic if self.is_major else (self.tonic + 3) % 12
+        sharps = (7 * relative_major) % 12
+        return sharps - 12 if self.spelling == 'flat' else sharps
+
+    @property
+    def pitch_names(self) -> Tuple[str, ...]:
+        """What this key calls each pitch class, index = pitch class.
+
+        Its signature's accidentals throughout, except a minor key's leading
+        tone, which is always written as the raised 7th. Minor melodies lean
+        on it, and D minor's flats alone would call it Db - which reads as a
+        wrong note, where C# reads as the leading tone it is.
+        """
+        names = list(SPELLINGS[self.spelling])
+        if not self.is_major:
+            names[(self.tonic - 1) % 12] = self._raised_seventh()
+        return tuple(names)
+
+    def _raised_seventh(self) -> str:
+        # The letter below the tonic's, sharpened as far as a semitone below
+        # the tonic needs: B in C minor, C# in D minor, F## in G# minor.
+        tonic_letter = SPELLINGS[self.spelling][self.tonic][0]
+        letters = list(NATURALS)
+        letter = letters[letters.index(tonic_letter) - 1]
+        return letter + '#' * ((self.tonic - 1 - NATURALS[letter]) % 12)
+
+    def transposed(self, semitones: int) -> 'KeyEstimate':
+        """The key as a transposing instrument reads it: concert Gb major is
+        Eb major for alto sax (+9)."""
+        return KeyEstimate(tonic=(self.tonic + semitones) % 12,
+                           is_major=self.is_major, confidence=self.confidence)
 
     @property
     def pitch_classes(self) -> List[int]:
@@ -57,6 +123,44 @@ class KeyEstimate:
         biasing on a coin-flip would inject noise into the decoder.
         """
         return self.pitch_classes if self.confidence >= min_confidence else None
+
+
+def note_spelling(key: Optional[KeyEstimate], transpose: int = 0) -> str:
+    """'flat' or 'sharp': the accidentals of the key that the notes of a song
+    in `key` are written in, once transposed by `transpose` semitones.
+
+    It is the written key that decides, and transposition can flip it:
+    concert Bb major, a flat key, is G major on alto sax and takes sharps.
+    """
+    written = _spelling_key(key, transpose)
+    return written.spelling if written else 'sharp'
+
+
+def note_names(key: Optional[KeyEstimate],
+               transpose: int = 0) -> Tuple[str, ...]:
+    """What to call each pitch class of those same notes, index = pitch
+    class: the written key's `pitch_names`, on the same terms as
+    `note_spelling`, so the table and the flag cannot disagree."""
+    written = _spelling_key(key, transpose)
+    return written.pitch_names if written else SPELLINGS['sharp']
+
+
+def signature_key(key: Optional[KeyEstimate],
+                  transpose: int = 0) -> Optional[KeyEstimate]:
+    """The key a score of those notes shows as its key signature: the one
+    they are spelled in, or None when they are spelled with plain sharps
+    because no key was trusted - a signature must never contradict the
+    names under it."""
+    return _spelling_key(key, transpose)
+
+
+def _spelling_key(key: Optional[KeyEstimate],
+                  transpose: int) -> Optional[KeyEstimate]:
+    # A key too uncertain to use as the decoder's prior is too uncertain to
+    # choose accidentals by: None, and the notes get the same sharps as no key.
+    if key is None or key.as_prior() is None:
+        return None
+    return key.transposed(transpose)
 
 
 def chroma_profile(audio_path, sr: int = 22050) -> np.ndarray:
