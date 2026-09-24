@@ -18,6 +18,8 @@ import traceback
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .datasets import (AUDIO_EXTENSIONS, is_auxiliary, notes_path_for,
+                       read_notes_csv)
 from .groundtruth import GroundTruth, load_csv_f0
 from .metrics import ScoreResult, aggregate, format_table, score
 from .systems import REGISTRY, System, get_system
@@ -29,9 +31,14 @@ DEFAULT_RESULTS_DIR = Path('data/results')
 def load_dataset(path) -> List[GroundTruth]:
     """Load a corpus laid out as matching audio/annotation pairs.
 
-    Expects `<stem>.wav` (or .mp3/.flac) beside `<stem>.csv` holding
-    `time,frequency` rows - the vocadito layout, and simple enough to
-    reproduce by hand for MedleyDB or your own annotations.
+    Expects `<stem>.wav` (or .mp3/.flac/.ogg) beside `<stem>.csv` holding
+    `time,frequency` rows, and optionally `<stem>.notes.csv` holding
+    `onset,offset,midi` rows - see `datasets.py`, which also converts the
+    public corpora (vocadito, iKala, TONAS, MedleyDB) into this layout.
+
+    When reference notes exist they are what note F1 is scored against;
+    otherwise notes are re-derived from the f0 curve, which grades the
+    segmentation against a heuristic rather than against an annotator.
     """
     path = Path(path)
     if not path.exists():
@@ -39,8 +46,10 @@ def load_dataset(path) -> List[GroundTruth]:
 
     truths: List[GroundTruth] = []
     for csv_path in sorted(path.rglob('*.csv')):
+        if is_auxiliary(csv_path):
+            continue  # x.notes.csv and the like annotate track x
         audio = None
-        for ext in ('.wav', '.mp3', '.flac', '.ogg'):
+        for ext in AUDIO_EXTENSIONS:
             candidate = csv_path.with_suffix(ext)
             if candidate.exists():
                 audio = candidate
@@ -48,7 +57,11 @@ def load_dataset(path) -> List[GroundTruth]:
         if audio is None:
             print(f"  skipping {csv_path.name}: no matching audio file")
             continue
-        truths.append(load_csv_f0(csv_path, name=csv_path.stem, audio_path=audio))
+        truth = load_csv_f0(csv_path, name=csv_path.stem, audio_path=audio)
+        notes_path = notes_path_for(csv_path)
+        if notes_path.exists():
+            truth.notes = read_notes_csv(notes_path) or None
+        truths.append(truth)
 
     if not truths:
         raise ValueError(f"No audio/CSV annotation pairs found under {path}")
