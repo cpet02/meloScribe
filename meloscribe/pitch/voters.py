@@ -14,6 +14,8 @@ instead of falling over.
 
 from __future__ import annotations
 
+import contextlib
+import sys
 import warnings
 from dataclasses import dataclass
 from typing import List, Optional
@@ -387,6 +389,20 @@ class CrepeVoter(Voter):
         )
 
 
+def basic_pitch_predict(**kwargs):
+    """basic-pitch's `predict`, with its "Predicting MIDI for <path>..." sent
+    to stderr instead of stdout.
+
+    On stdout it crashed whoever called it with stdout redirected on Windows
+    - a web server logging to a file, a script piping its output - as soon as
+    the path held a character outside the ANSI code page: stdout encodes
+    strictly, while stderr escapes what it cannot encode.
+    """
+    from basic_pitch.inference import predict
+    with contextlib.redirect_stdout(sys.stderr):
+        return predict(**kwargs)
+
+
 class BasicPitchVoter(Voter):
     """basic-pitch, using the posteriorgram the old pipeline threw away.
 
@@ -415,12 +431,11 @@ class BasicPitchVoter(Voter):
 
     def observe(self, audio: Audio, n_frames: int) -> VoterOutput:
         from basic_pitch import ICASSP_2022_MODEL_PATH
-        from basic_pitch.inference import predict
 
         if audio.path is None:
             raise ValueError('BasicPitchVoter needs an audio file on disk')
 
-        model_output, _, _ = predict(
+        model_output, _, _ = basic_pitch_predict(
             audio_path=str(audio.path),
             model_or_model_path=ICASSP_2022_MODEL_PATH,
         )

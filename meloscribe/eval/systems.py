@@ -57,9 +57,10 @@ class BasicPitchSystem(System):
 
     def transcribe(self, audio_path: Path) -> Prediction:
         from basic_pitch import ICASSP_2022_MODEL_PATH
-        from basic_pitch.inference import predict
 
-        _, _, note_events = predict(
+        from ..pitch.voters import basic_pitch_predict
+
+        _, _, note_events = basic_pitch_predict(
             audio_path=str(audio_path),
             model_or_model_path=ICASSP_2022_MODEL_PATH,
             onset_threshold=self.onset_threshold,

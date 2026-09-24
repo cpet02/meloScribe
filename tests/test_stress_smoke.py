@@ -87,6 +87,23 @@ def test_engine_survives_non_finite_samples(tmp_path):
     assert {57, 60, 64, 69} <= {n.midi for n in notes}
 
 
+def test_engine_survives_a_file_name_stdout_cannot_encode(tmp_path, monkeypatch):
+    """basic-pitch prints the path it reads to stdout. Redirected on Windows,
+    stdout is strict cp1252, so a song named in Chinese crashed the engine -
+    under a web server logging to a file, say, rather than the CLI, which
+    moves library output to stderr itself."""
+    import io
+    import sys
+    from meloscribe.pitch.engine import EngineSettings, PitchEngine
+    x, _ = stress._fuzz_voice()
+    path = tmp_path / 'Café del Mar – 你好.wav'
+    sf.write(str(path), x, stress.SR)
+    monkeypatch.setattr(sys, 'stdout', io.TextIOWrapper(io.BytesIO(),
+                                                        encoding='cp1252'))
+    notes = PitchEngine(EngineSettings(voters=FAST)).transcribe(path).notes
+    assert {57, 60, 64, 69} <= {n.midi for n in notes}
+
+
 def test_phase_inverted_stereo_does_not_cancel(tmp_path):
     """L = v, R = -v sums to digital silence in a plain downmix."""
     x, _ = stress._fuzz_voice()
