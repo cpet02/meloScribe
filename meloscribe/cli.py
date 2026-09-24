@@ -111,7 +111,14 @@ examples:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    # A pickup is part of a bar: out of range it silently wrapped round it
+    # (-1 gave a three-beat pickup in 4/4, and 4 none at all).
+    beats_per_bar = int(args.time_signature.split('/')[0])
+    if not 0 <= args.pickup < beats_per_bar:
+        parser.error(f"--pickup must be 0 to {beats_per_bar - 1} beats in "
+                     f"{args.time_signature}")
 
     mode = LyricsMode.OFF if args.no_lyrics else LyricsMode(args.lyrics_mode)
 

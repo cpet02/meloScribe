@@ -536,6 +536,18 @@ sys.exit(cli.main(['missing.mp3', '--no-lyrics', '--quiet',
 '''
 
 
+@pytest.mark.parametrize('pickup,meter', [('-1', '4/4'), ('4', '4/4'),
+                                           ('3', '3/4')])
+def test_a_pickup_outside_the_bar_is_refused(tmp_path, pickup, meter, capsys):
+    from meloscribe import cli
+    with pytest.raises(SystemExit) as stop:
+        cli.main([str(tmp_path / 'song.mp3'), '--no-lyrics', '--musicxml',
+                  str(tmp_path / 'out.musicxml'), '--pickup', pickup,
+                  '--time-signature', meter])
+    assert stop.value.code == 2
+    assert '--pickup must be 0 to' in capsys.readouterr().err
+
+
 @pytest.mark.parametrize('fmt', ['musicxml', 'json', 'csv', 'lrc'])
 def test_redirected_output_is_utf8_whatever_the_console(tmp_path, fmt):
     """Redirected on Windows, stdout is in the ANSI code page: cp1252 wrote a
