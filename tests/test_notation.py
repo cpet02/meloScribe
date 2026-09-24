@@ -17,7 +17,7 @@ from meloscribe import notation, rhythm
 from meloscribe.key import KeyEstimate, note_names
 from meloscribe.lyrics.align import LyricLine, LyricWord, TimedLyrics, \
     attach_to_notes
-from meloscribe.musicxml import (MEDIA_TYPE, choose_clef, pitch_parts,
+from meloscribe.musicxml import (MEDIA_TYPE, choose_clef, clock, pitch_parts,
                                  to_musicxml, transpose_interval)
 from meloscribe.output import FORMATS, render
 from meloscribe.pitch.engine import TranscribedNote
@@ -454,6 +454,14 @@ def test_music21_reads_back_what_was_written():
     assert part.getInstrument().transposition.semitones == -9
     sounding = [n.pitch.midi for n in parsed.toSoundingPitch().recurse().notes]
     assert sounding == [midi for midi, _ in values if midi is not None]
+
+
+@pytest.mark.parametrize('seconds,shown', [
+    (1.0, '0:01.0'), (61.04, '1:01.0'), (59.95, '1:00.0'), (119.97, '2:00.0'),
+    (3599.99, '60:00.0')])
+def test_the_start_time_never_reads_sixty_seconds(seconds, shown):
+    # Split into minutes before rounding, 119.97 s read '1:60.0'.
+    assert clock(seconds) == shown
 
 
 # --------------------------------------------------------------------------
